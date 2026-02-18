@@ -1,8 +1,8 @@
-# Tix — AI-Powered Ticket Escrow
+# Deal — AI-Powered Ticket Escrow
 
 Peer-to-peer ticket sales have a trust problem. Buyers send money and hope. Sellers send tickets and hope. StubHub charges 20-30%. Venmo offers zero protection.
 
-Tix sits in the middle: AI-managed USDC escrow on Base, accessible via a shareable link. Seller describes their tickets in plain English, AI structures the deal, first buyer to deposit claims it. 2.5% fee.
+Deal sits in the middle: AI-managed USDC escrow on Base, accessible via a shareable link. Seller describes their tickets in plain English, AI structures the deal, first buyer to deposit claims it. 2.5% fee.
 
 ```
 Seller posts link in Facebook group
@@ -19,7 +19,7 @@ Seller posts link in Facebook group
 ### For Sellers
 1. Log in with your phone number (SMS OTP via Privy)
 2. Describe your tickets in plain text — the AI extracts event, date, venue, section, row, seats, price, and transfer method
-3. Get a shareable deal link (`tix.app/deal/abc123`)
+3. Get a shareable deal link (`deal.app/deal/abc123`)
 4. Share it anywhere — Facebook groups, DMs, Marketplace
 5. First buyer to deposit claims the deal. Transfer the tickets, get paid.
 
@@ -43,7 +43,7 @@ When a buyer reports an issue, the chat splits into private threads. The AI coll
 ```
 ┌──────────────────────────────────────────────────┐
 │                  DEAL LINK                        │
-│           tix.app/deal/abc123                     │
+│           deal.app/deal/abc123                     │
 │                                                   │
 │  Seller View         AI Agent         Buyer View  │
 │                                                   │
@@ -182,8 +182,8 @@ Gas for a full deal lifecycle: ~$0.01 on Base.
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/ClementSutjiatma/tix.git
-cd tix
+git clone https://github.com/ClementSutjiatma/deal.git
+cd deal
 npm install
 ```
 

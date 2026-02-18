@@ -6,7 +6,7 @@ import { ClientProviders } from "@/components/client-providers";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Tix - Safe Ticket Escrow",
+  title: "Deal - Safe Ticket Escrow",
   description:
     "AI-powered escrow for peer-to-peer ticket sales. Share a link. First to deposit wins.",
 };
