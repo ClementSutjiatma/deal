@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Ticket } from "lucide-react";
+import { ArrowRight, TrendingUp, Lock, Scale } from "lucide-react";
 import { TextMorph } from "torph/react";
 
 interface Listing {
@@ -49,17 +49,6 @@ function formatPrice(cents: number): string {
   return `$${(cents / 100).toFixed(0)}`;
 }
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 export function LandingClient({ listings }: { listings: Listing[] }) {
   const [input, setInput] = useState("");
   const router = useRouter();
@@ -70,7 +59,6 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
     (e: React.FormEvent) => {
       e.preventDefault();
       if (!input.trim()) return;
-      // Navigate to /sell with the description pre-filled as a query param
       router.push(`/sell?q=${encodeURIComponent(input.trim())}`);
     },
     [input, router]
@@ -78,8 +66,36 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
 
   return (
     <div className="min-h-screen flex flex-col">
+      {/* Ticker */}
+      {listings.length > 0 && (
+        <div className="w-full overflow-hidden bg-zinc-50 border-b border-zinc-100">
+          <div className="animate-ticker flex whitespace-nowrap py-2.5">
+            {/* Duplicate the list for seamless infinite scroll */}
+            {[...listings, ...listings].map((listing, i) => (
+              <a
+                key={`${listing.short_code}-${i}`}
+                href={`/deal/${listing.short_code}`}
+                className="inline-flex items-center gap-1.5 px-4 text-xs text-zinc-400 hover:text-orange-500 transition-colors flex-shrink-0"
+              >
+                <span className="font-medium text-zinc-600">
+                  {listing.event_name}
+                </span>
+                <span className="text-zinc-300">·</span>
+                <span>{formatPrice(listing.price_cents)}</span>
+                {listing.venue && (
+                  <>
+                    <span className="text-zinc-300">·</span>
+                    <span>{listing.venue}</span>
+                  </>
+                )}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Hero + Input */}
-      <main className="flex-1 flex flex-col items-center px-6 pt-24 pb-12">
+      <main className="flex-1 flex flex-col items-center px-6 pt-20 pb-12">
         <div className="max-w-lg w-full space-y-4">
           {/* Title */}
           <h1 className="text-3xl font-bold tracking-tight text-zinc-900">
@@ -122,52 +138,50 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
           </TextMorph>
         </div>
 
-        {/* Listings grid */}
-        {listings.length > 0 && (
-          <div className="max-w-lg w-full mt-16">
-            <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-4">
-              Live listings
-            </h2>
-            <div className="grid grid-cols-2 gap-3">
-              {listings.map((listing) => (
-                <a
-                  key={listing.short_code}
-                  href={`/deal/${listing.short_code}`}
-                  className="group rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4 hover:border-orange-200 hover:bg-orange-50/30 transition-colors"
-                >
-                  <div className="flex items-start gap-2.5">
-                    <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center flex-shrink-0 group-hover:bg-orange-200 transition-colors">
-                      <Ticket className="w-4 h-4 text-orange-500" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-zinc-900 truncate">
-                        {listing.event_name}
-                      </p>
-                      {listing.venue && (
-                        <p className="text-xs text-zinc-400 truncate mt-0.5">
-                          {listing.venue}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-baseline justify-between mt-3">
-                    <span className="text-sm font-semibold text-zinc-900">
-                      {formatPrice(listing.price_cents)}
-                      <span className="text-xs font-normal text-zinc-400">
-                        {listing.num_tickets > 1
-                          ? ` × ${listing.num_tickets}`
-                          : " ea"}
-                      </span>
-                    </span>
-                    <span className="text-xs text-zinc-300">
-                      {timeAgo(listing.created_at)}
-                    </span>
-                  </div>
-                </a>
-              ))}
+        {/* Benefits */}
+        <div className="max-w-lg w-full mt-16 space-y-6">
+          <div className="flex gap-4 items-start">
+            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
+              <TrendingUp className="w-4 h-4 text-orange-500" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-900">
+                Get the best price
+              </h3>
+              <p className="text-sm text-zinc-400 mt-0.5">
+                Dealbay negotiates a price equal to or above your asking price, so you never sell for less.
+              </p>
             </div>
           </div>
-        )}
+
+          <div className="flex gap-4 items-start">
+            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
+              <Lock className="w-4 h-4 text-orange-500" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-900">
+                Payment secured, zero fees
+              </h3>
+              <p className="text-sm text-zinc-400 mt-0.5">
+                Funds lock the moment a buyer commits. Auto-releases on confirmation. No fees, ever.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-4 items-start">
+            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
+              <Scale className="w-4 h-4 text-orange-500" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-zinc-900">
+                Automated dispute resolution
+              </h3>
+              <p className="text-sm text-zinc-400 mt-0.5">
+                Evidence-based: Dealbay gathers evidence and adjudicates payment should any dispute come up.
+              </p>
+            </div>
+          </div>
+        </div>
       </main>
 
       {/* Footer */}
