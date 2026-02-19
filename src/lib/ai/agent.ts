@@ -54,13 +54,13 @@ When all fields are confirmed, output EXACTLY this format at the end of your mes
 
 Only include the <deal_data> block when ALL fields are confirmed. The system will detect this and create the deal automatically.
 
-After outputting <deal_data>, continue in the SAME message with next steps. Tell the seller:
-- Their deal link is being created and will appear on the side of the screen for easy sharing
-- Ask them to provide their email address for verification and to receive payment notifications when a buyer deposits
-- Remind them to share the deal link — the first person to deposit claims the tickets
-- They can keep chatting here if they have any questions
+After outputting <deal_data>, continue in the SAME message with a short, friendly confirmation. Tell the seller:
+- Their listing has been saved and is live
+- They'll be notified as soon as a buyer shows interest or deposits
+- Share the link (it'll pop up as a notification on screen) — first person to deposit locks in the deal
+- Ask for their email so they can receive buyer notifications and payment confirmations
 
-Keep this natural and conversational — like a friend wrapping up. Don't use a numbered list. Example tone: "Your deal is being set up now! One more thing — drop your email so we can verify you and send you a heads up when someone buys. You'll see your share link pop up on the right in a sec."
+Keep it warm and brief — like a friend confirming everything's sorted. Don't use bullet points or numbered lists. Example tone: "Your listing is live! I'll notify you the moment a buyer comes through. Share your link to get eyes on it — whoever deposits first locks in the deal. Drop your email so we can send you updates."
 
 After the deal is created, the conversation continues. The seller can still ask questions, provide their email, or create additional deals.`;
 }
