@@ -2,7 +2,7 @@
 
 Peer-to-peer ticket sales have a trust problem. Buyers send money and hope. Sellers send tickets and hope. StubHub charges 20-30%. Venmo offers zero protection.
 
-Deal sits in the middle: AI-managed USDC escrow on Base, accessible via a shareable link. Seller describes their tickets in plain English, AI structures the deal, first buyer to deposit claims it. 2.5% fee.
+Deal sits in the middle: AI-managed USDC escrow on Base, accessible via a shareable link. Seller describes their tickets in plain English, AI structures the deal, first buyer to deposit claims it. Completely free — zero fees, gas sponsored.
 
 ```
 Seller posts link in Facebook group
@@ -10,8 +10,8 @@ Seller posts link in Facebook group
   → First to deposit $400 USDC wins
   → Seller transfers tickets via Ticketmaster
   → Buyer confirms receipt
-  → $390 released to seller, $10 platform fee
-  → Total gas cost: ~$0.01
+  → $400 released to seller (zero fees)
+  → Gas cost: sponsored by Deal
 ```
 
 ## How It Works
@@ -65,7 +65,7 @@ When a buyer reports an issue, the chat splits into private threads. The AI coll
 
 **Coinbase Onramp** — Guest checkout with Apple Pay or debit card. USDC delivered to buyer's Privy wallet in seconds. Zero-fee USDC (with Coinbase approval). Chargebacks hit Coinbase, not us.
 
-**Escrow Contract** — Solidity contract on Base holding USDC. ~167 lines. Permissionless timeouts, dispute freezing, platform fee at release. Full lifecycle: deposit → transfer → confirm → release.
+**Escrow Contract** — Solidity contract on Base holding USDC. Zero fees — the full deposit amount goes to the seller. Permissionless timeouts, dispute freezing. Full lifecycle: deposit → transfer → confirm → release.
 
 **Claude API** — AI agent for deal creation (free text parsing), buyer Q&A, transaction mediation, and dispute adjudication with evidence review.
 
@@ -93,7 +93,7 @@ OPEN ──→ EXPIRED (no deposit within 7 days)
 | Auth | Privy (SMS OTP + embedded wallets) |
 | Database | Supabase (Postgres + Realtime + RLS) |
 | Payments | Coinbase Onramp (Apple Pay, debit card → USDC) |
-| Escrow | Solidity on Base (OpenZeppelin, ~$0.01 gas/deal) |
+| Escrow | Solidity on Base (OpenZeppelin, zero fees, gas sponsored) |
 | AI | Claude Sonnet via Anthropic API |
 | SMS | Twilio (notification-only) |
 | Hosting | Vercel (with cron for timeout enforcement) |
@@ -127,7 +127,7 @@ src/
 │   └── name-prompt.tsx                   # First-name collection
 ├── lib/
 │   ├── ai/agent.ts                       # Claude AI agent (deal creation + chat)
-│   ├── constants.ts                      # Statuses, timeouts, fees, chain config
+│   ├── constants.ts                      # Statuses, timeouts, chain config
 │   ├── escrow.ts                         # Viem contract interactions
 │   ├── twilio.ts                         # SMS notification functions
 │   ├── supabase/client.ts                # Browser Supabase client
@@ -171,7 +171,7 @@ Deployed on Base. Holds USDC for active deals. Key functions:
 | `dispute()` | Buyer | Transferred, before deadline |
 | `resolveDispute()` | Platform only | Disputed (AI ruling) |
 
-Gas for a full deal lifecycle: ~$0.01 on Base.
+Gas for a full deal lifecycle: sponsored by Deal (free for users).
 
 ## Setup
 
@@ -255,14 +255,11 @@ Open [http://localhost:3000](http://localhost:3000).
 ```
 Ticket sale:      $400
 Onramp fee:       $0 (zero-fee USDC)
-Gas (Base):       ~$0.01
-Platform fee:     $10 (2.5%)
-AI cost:          ~$0.08
-SMS cost:         ~$0.10
+Gas (Base):       $0 (sponsored by Deal)
+Platform fee:     $0 (completely free)
 ───────────────────────
 Buyer pays:       $400
-Seller receives:  $390
-Platform margin:  $9.82
+Seller receives:  $400
 
 vs. StubHub:      $80-120 in fees (20-30%)
 vs. Venmo:        $0 fees, $400 of risk

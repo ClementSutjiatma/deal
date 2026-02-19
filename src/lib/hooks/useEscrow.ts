@@ -28,7 +28,6 @@ interface DepositParams {
   deal_id_bytes32: string;
   seller: string;
   amount: string;
-  fee_bps: string;
   transfer_deadline: string;
   confirm_deadline: string;
 }
@@ -99,7 +98,7 @@ export function useEscrow() {
         });
         await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
-        // Step 2: Deposit to escrow
+        // Step 2: Deposit to escrow (no fees)
         setStep("depositing");
         const depositHash = await walletClient.writeContract({
           address: params.escrow_address as Hex,
@@ -109,7 +108,6 @@ export function useEscrow() {
             params.deal_id_bytes32 as Hex,
             params.seller as Hex,
             BigInt(params.amount),
-            BigInt(params.fee_bps),
             BigInt(params.transfer_deadline),
             BigInt(params.confirm_deadline),
           ],

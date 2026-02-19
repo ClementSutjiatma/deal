@@ -57,7 +57,6 @@ export async function POST(
       deal_id_bytes32: depositParams.dealId,
       seller: depositParams.seller,
       amount: depositParams.amount.toString(),
-      fee_bps: depositParams.feeBps.toString(),
       transfer_deadline: depositParams.transferDeadline.toString(),
       confirm_deadline: depositParams.confirmDeadline.toString(),
     },

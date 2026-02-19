@@ -14,8 +14,7 @@ describe("TicketEscrow", function () {
     // Deploy escrow
     const TicketEscrow = await hre.ethers.getContractFactory("TicketEscrow");
     const escrow = await TicketEscrow.deploy(
-      await usdc.getAddress(),
-      owner.address
+      await usdc.getAddress()
     );
 
     // Mint USDC to buyer
@@ -26,7 +25,6 @@ describe("TicketEscrow", function () {
     const dealId = keccak256(toHex("test-deal-uuid"));
     const transferDeadline = 7200n; // 2 hours
     const confirmDeadline = 14400n; // 4 hours
-    const feeBps = 250n; // 2.5%
 
     return {
       escrow,
@@ -39,19 +37,18 @@ describe("TicketEscrow", function () {
       dealId,
       transferDeadline,
       confirmDeadline,
-      feeBps,
     };
   }
 
   describe("deposit", function () {
     it("should create a deal and transfer USDC to escrow", async function () {
-      const { escrow, usdc, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, usdc, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await expect(
         escrow
           .connect(buyer)
-          .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline)
+          .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline)
       )
         .to.emit(escrow, "DealFunded")
         .withArgs(dealId, buyer.address, seller.address, amount);
@@ -60,40 +57,40 @@ describe("TicketEscrow", function () {
     });
 
     it("should revert if deal already exists", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
 
       await expect(
         escrow
           .connect(buyer)
-          .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline)
+          .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline)
       ).to.be.revertedWith("Deal already exists");
     });
 
     it("should revert if buyer is seller", async function () {
-      const { escrow, buyer, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await expect(
         escrow
           .connect(buyer)
-          .deposit(dealId, buyer.address, amount, feeBps, transferDeadline, confirmDeadline)
+          .deposit(dealId, buyer.address, amount, transferDeadline, confirmDeadline)
       ).to.be.revertedWith("Buyer cannot be seller");
     });
   });
 
   describe("markTransferred", function () {
     it("should update deal status to Transferred", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
 
       await expect(escrow.connect(seller).markTransferred(dealId))
         .to.emit(escrow, "DealTransferred")
@@ -101,12 +98,12 @@ describe("TicketEscrow", function () {
     });
 
     it("should revert if not seller", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
 
       await expect(
         escrow.connect(buyer).markTransferred(dealId)
@@ -114,12 +111,12 @@ describe("TicketEscrow", function () {
     });
 
     it("should revert if transfer deadline passed", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
 
       await time.increase(7201);
 
@@ -130,40 +127,33 @@ describe("TicketEscrow", function () {
   });
 
   describe("confirm", function () {
-    it("should release funds to seller minus fee", async function () {
-      const { escrow, usdc, buyer, seller, owner, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+    it("should release full amount to seller (zero fees)", async function () {
+      const { escrow, usdc, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
       await escrow.connect(seller).markTransferred(dealId);
 
       const sellerBefore = await usdc.balanceOf(seller.address);
-      const platformBefore = await usdc.balanceOf(owner.address);
 
       await escrow.connect(buyer).confirm(dealId);
 
-      const fee = (amount * feeBps) / 10000n;
-      const sellerAmount = amount - fee;
-
       expect(await usdc.balanceOf(seller.address)).to.equal(
-        sellerBefore + sellerAmount
-      );
-      expect(await usdc.balanceOf(owner.address)).to.equal(
-        platformBefore + fee
+        sellerBefore + amount
       );
     });
   });
 
   describe("refund", function () {
     it("should refund buyer after transfer deadline", async function () {
-      const { escrow, usdc, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, usdc, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
 
       await time.increase(7201);
 
@@ -179,12 +169,12 @@ describe("TicketEscrow", function () {
     });
 
     it("should revert if transfer deadline not passed", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
 
       await expect(
         escrow.connect(buyer).refund(dealId)
@@ -194,12 +184,12 @@ describe("TicketEscrow", function () {
 
   describe("autoRelease", function () {
     it("should release funds after confirm deadline", async function () {
-      const { escrow, usdc, buyer, seller, owner, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, usdc, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
       await escrow.connect(seller).markTransferred(dealId);
 
       await time.increase(14401);
@@ -210,12 +200,12 @@ describe("TicketEscrow", function () {
 
   describe("dispute + resolveDispute", function () {
     it("should allow buyer to dispute and owner to resolve in buyer favor", async function () {
-      const { escrow, usdc, buyer, seller, owner, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, usdc, buyer, seller, owner, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
       await escrow.connect(seller).markTransferred(dealId);
 
       await expect(escrow.connect(buyer).dispute(dealId))
@@ -234,28 +224,27 @@ describe("TicketEscrow", function () {
     });
 
     it("should allow resolve in seller favor", async function () {
-      const { escrow, usdc, buyer, seller, owner, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, usdc, buyer, seller, owner, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
       await escrow.connect(seller).markTransferred(dealId);
       await escrow.connect(buyer).dispute(dealId);
 
       await escrow.connect(owner).resolveDispute(dealId, false);
 
-      const fee = (amount * feeBps) / 10000n;
-      expect(await usdc.balanceOf(seller.address)).to.equal(amount - fee);
+      expect(await usdc.balanceOf(seller.address)).to.equal(amount);
     });
 
     it("should revert if non-owner tries to resolve", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
       await escrow.connect(seller).markTransferred(dealId);
       await escrow.connect(buyer).dispute(dealId);
 
@@ -265,12 +254,12 @@ describe("TicketEscrow", function () {
     });
 
     it("dispute should prevent autoRelease", async function () {
-      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline, feeBps } =
+      const { escrow, buyer, seller, amount, dealId, transferDeadline, confirmDeadline } =
         await deployFixture();
 
       await escrow
         .connect(buyer)
-        .deposit(dealId, seller.address, amount, feeBps, transferDeadline, confirmDeadline);
+        .deposit(dealId, seller.address, amount, transferDeadline, confirmDeadline);
       await escrow.connect(seller).markTransferred(dealId);
       await escrow.connect(buyer).dispute(dealId);
 

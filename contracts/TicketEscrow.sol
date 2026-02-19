@@ -14,7 +14,6 @@ contract TicketEscrow is Ownable {
         address buyer;
         address seller;
         uint256 amount;
-        uint256 platformFeeBps;
         uint256 depositedAt;
         uint256 transferredAt;
         uint256 transferDeadline;
@@ -23,26 +22,23 @@ contract TicketEscrow is Ownable {
     }
 
     IERC20 public immutable usdc;
-    address public platformFeeRecipient;
     mapping(bytes32 => Deal) public deals;
 
     event DealFunded(bytes32 indexed dealId, address buyer, address seller, uint256 amount);
     event DealTransferred(bytes32 indexed dealId);
-    event DealReleased(bytes32 indexed dealId, uint256 sellerAmount, uint256 platformFee);
+    event DealReleased(bytes32 indexed dealId, uint256 amount);
     event DealRefunded(bytes32 indexed dealId, uint256 amount);
     event DealDisputed(bytes32 indexed dealId);
     event DisputeResolved(bytes32 indexed dealId, address winner, bool favoredBuyer);
 
-    constructor(address _usdc, address _platformFeeRecipient) Ownable(msg.sender) {
+    constructor(address _usdc) Ownable(msg.sender) {
         usdc = IERC20(_usdc);
-        platformFeeRecipient = _platformFeeRecipient;
     }
 
     function deposit(
         bytes32 dealId,
         address seller,
         uint256 amount,
-        uint256 feeBps,
         uint256 transferDeadline,
         uint256 confirmDeadline
     ) external {
@@ -50,7 +46,6 @@ contract TicketEscrow is Ownable {
         require(amount > 0, "Amount must be positive");
         require(seller != address(0), "Invalid seller");
         require(seller != msg.sender, "Buyer cannot be seller");
-        require(feeBps <= 1000, "Fee too high"); // max 10%
 
         usdc.safeTransferFrom(msg.sender, address(this), amount);
 
@@ -58,7 +53,6 @@ contract TicketEscrow is Ownable {
             buyer: msg.sender,
             seller: seller,
             amount: amount,
-            platformFeeBps: feeBps,
             depositedAt: block.timestamp,
             transferredAt: 0,
             transferDeadline: transferDeadline,
@@ -146,22 +140,10 @@ contract TicketEscrow is Ownable {
         }
     }
 
-    function setPlatformFeeRecipient(address _recipient) external onlyOwner {
-        require(_recipient != address(0), "Invalid address");
-        platformFeeRecipient = _recipient;
-    }
-
     function _releaseFunds(bytes32 dealId, Deal storage deal) internal {
-        uint256 fee = (deal.amount * deal.platformFeeBps) / 10000;
-        uint256 sellerAmount = deal.amount - fee;
-
         deal.status = DealStatus.Released;
+        usdc.safeTransfer(deal.seller, deal.amount);
 
-        if (fee > 0) {
-            usdc.safeTransfer(platformFeeRecipient, fee);
-        }
-        usdc.safeTransfer(deal.seller, sellerAmount);
-
-        emit DealReleased(dealId, sellerAmount, fee);
+        emit DealReleased(dealId, deal.amount);
     }
 }

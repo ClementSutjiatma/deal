@@ -11,7 +11,7 @@ export default function Home() {
             Sell your tickets safely.
           </h1>
           <p className="text-lg text-zinc-500">
-            AI-powered escrow for peer-to-peer ticket sales. 2-5% fee. No scams.
+            AI-powered escrow for peer-to-peer ticket sales. Zero fees. No scams.
           </p>
 
           <Link

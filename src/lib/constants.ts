@@ -50,9 +50,6 @@ export const DEAL_EXPIRY_TIMEOUT = 7 * 24 * 60 * 60; // 7 days
 export const DISPUTE_RESPONSE_TIMEOUT = 4 * 60 * 60; // 4 hours
 export const DISPUTE_WINDOW_AFTER_CONFIRM = 24 * 60 * 60; // 24 hours
 
-// Platform fee in basis points (250 = 2.5%)
-export const PLATFORM_FEE_BPS = 250;
-
 // Base chain
 export const BASE_CHAIN_ID = 8453;
 export const BASE_SEPOLIA_CHAIN_ID = 84532;

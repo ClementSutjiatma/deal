@@ -9,7 +9,7 @@ import {
 } from "viem";
 import { PrivyClient } from "@privy-io/server-auth";
 import { createViemAccount } from "@privy-io/server-auth/viem";
-import { USDC_DECIMALS, PLATFORM_FEE_BPS } from "./constants";
+import { USDC_DECIMALS } from "./constants";
 import { ESCROW_ABI, ERC20_ABI } from "./abis";
 import { chain, escrowAddress, usdcAddress, rpcUrl } from "./chain";
 
@@ -136,7 +136,6 @@ export function getDepositParams(
     dealId: dealIdToBytes32(dealUuid),
     seller: sellerAddress,
     amount: parseUnits(String(priceCents / 100), USDC_DECIMALS),
-    feeBps: BigInt(PLATFORM_FEE_BPS),
     transferDeadline: BigInt(transferDeadlineSeconds),
     confirmDeadline: BigInt(confirmDeadlineSeconds),
     escrowAbi: ESCROW_ABI,
