@@ -1,11 +1,10 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useWallets } from "@privy-io/react-auth";
+import { useSendTransaction } from "@privy-io/react-auth";
 import {
-  createWalletClient,
+  encodeFunctionData,
   createPublicClient,
-  custom,
   http,
   type Hex,
 } from "viem";
@@ -33,45 +32,12 @@ interface DepositParams {
 }
 
 export function useEscrow() {
-  const { wallets } = useWallets();
+  const { sendTransaction } = useSendTransaction();
   const [step, setStep] = useState<EscrowStep>("idle");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
 
-  const getWalletClient = useCallback(async () => {
-    const embeddedWallet = wallets.find(
-      (w) => w.walletClientType === "privy"
-    );
-    if (!embeddedWallet) {
-      throw new Error("No embedded wallet found. Please log in first.");
-    }
-
-    const provider = await embeddedWallet.getEthereumProvider();
-
-    // Request accounts first to activate the wallet
-    await provider.request({ method: "eth_requestAccounts" });
-
-    // Switch to the correct chain
-    try {
-      await provider.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: `0x${chain.id.toString(16)}` }],
-      });
-    } catch {
-      // Chain might not be added yet, try adding it
-      // Privy handles this automatically for supported chains
-    }
-
-    const walletClient = createWalletClient({
-      account: embeddedWallet.address as Hex,
-      chain,
-      transport: custom(provider),
-    });
-
-    return walletClient;
-  }, [wallets]);
-
-  const getPublicClientInstance = useCallback(() => {
+  const getPublicClient = useCallback(() => {
     return createPublicClient({
       chain,
       transport: http(rpcUrl),
@@ -80,6 +46,7 @@ export function useEscrow() {
 
   /**
    * Execute the full deposit flow: USDC approve → escrow deposit
+   * Uses Privy gas sponsorship so the user doesn't need ETH.
    */
   const deposit = useCallback(
     async (params: DepositParams): Promise<string> => {
@@ -88,23 +55,24 @@ export function useEscrow() {
       setTxHash(null);
 
       try {
-        const walletClient = await getWalletClient();
-        const publicClient = getPublicClientInstance();
+        const publicClient = getPublicClient();
 
         // Step 1: Approve USDC
         setStep("approving");
-        const approveHash = await walletClient.writeContract({
-          address: params.usdc_address as Hex,
+        const approveData = encodeFunctionData({
           abi: ERC20_ABI,
           functionName: "approve",
           args: [params.escrow_address as Hex, BigInt(params.amount)],
         });
-        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        const approveTx = await sendTransaction(
+          { to: params.usdc_address, data: approveData },
+          { sponsor: true },
+        );
+        await publicClient.waitForTransactionReceipt({ hash: approveTx.hash });
 
         // Step 2: Deposit to escrow (no fees)
         setStep("depositing");
-        const depositHash = await walletClient.writeContract({
-          address: params.escrow_address as Hex,
+        const depositData = encodeFunctionData({
           abi: ESCROW_ABI,
           functionName: "deposit",
           args: [
@@ -115,13 +83,17 @@ export function useEscrow() {
             BigInt(params.confirm_deadline),
           ],
         });
+        const depositTx = await sendTransaction(
+          { to: params.escrow_address, data: depositData },
+          { sponsor: true },
+        );
 
         setStep("confirming");
-        await publicClient.waitForTransactionReceipt({ hash: depositHash });
+        await publicClient.waitForTransactionReceipt({ hash: depositTx.hash });
 
-        setTxHash(depositHash);
+        setTxHash(depositTx.hash);
         setStep("done");
-        return depositHash;
+        return depositTx.hash;
       } catch (err: unknown) {
         const message =
           err instanceof Error ? err.message : "Transaction failed";
@@ -130,7 +102,7 @@ export function useEscrow() {
         throw err;
       }
     },
-    [getWalletClient, getPublicClientInstance]
+    [sendTransaction, getPublicClient],
   );
 
   /**
@@ -143,23 +115,25 @@ export function useEscrow() {
       setTxHash(null);
 
       try {
-        const walletClient = await getWalletClient();
-        const publicClient = getPublicClientInstance();
+        const publicClient = getPublicClient();
 
         setStep("transferring");
-        const hash = await walletClient.writeContract({
-          address: escrowAddr as Hex,
+        const data = encodeFunctionData({
           abi: ESCROW_ABI,
           functionName: "markTransferred",
           args: [dealIdBytes32 as Hex],
         });
+        const tx = await sendTransaction(
+          { to: escrowAddr, data },
+          { sponsor: true },
+        );
 
         setStep("confirming");
-        await publicClient.waitForTransactionReceipt({ hash });
+        await publicClient.waitForTransactionReceipt({ hash: tx.hash });
 
-        setTxHash(hash);
+        setTxHash(tx.hash);
         setStep("done");
-        return hash;
+        return tx.hash;
       } catch (err: unknown) {
         const message =
           err instanceof Error ? err.message : "Transaction failed";
@@ -168,7 +142,7 @@ export function useEscrow() {
         throw err;
       }
     },
-    [getWalletClient, getPublicClientInstance]
+    [sendTransaction, getPublicClient],
   );
 
   /**
@@ -181,22 +155,24 @@ export function useEscrow() {
       setTxHash(null);
 
       try {
-        const walletClient = await getWalletClient();
-        const publicClient = getPublicClientInstance();
+        const publicClient = getPublicClient();
 
         setStep("confirming");
-        const hash = await walletClient.writeContract({
-          address: escrowAddr as Hex,
+        const data = encodeFunctionData({
           abi: ESCROW_ABI,
           functionName: "confirm",
           args: [dealIdBytes32 as Hex],
         });
+        const tx = await sendTransaction(
+          { to: escrowAddr, data },
+          { sponsor: true },
+        );
 
-        await publicClient.waitForTransactionReceipt({ hash });
+        await publicClient.waitForTransactionReceipt({ hash: tx.hash });
 
-        setTxHash(hash);
+        setTxHash(tx.hash);
         setStep("done");
-        return hash;
+        return tx.hash;
       } catch (err: unknown) {
         const message =
           err instanceof Error ? err.message : "Transaction failed";
@@ -205,7 +181,7 @@ export function useEscrow() {
         throw err;
       }
     },
-    [getWalletClient, getPublicClientInstance]
+    [sendTransaction, getPublicClient],
   );
 
   /**
@@ -218,23 +194,25 @@ export function useEscrow() {
       setTxHash(null);
 
       try {
-        const walletClient = await getWalletClient();
-        const publicClient = getPublicClientInstance();
+        const publicClient = getPublicClient();
 
         setStep("disputing");
-        const hash = await walletClient.writeContract({
-          address: escrowAddr as Hex,
+        const data = encodeFunctionData({
           abi: ESCROW_ABI,
           functionName: "dispute",
           args: [dealIdBytes32 as Hex],
         });
+        const tx = await sendTransaction(
+          { to: escrowAddr, data },
+          { sponsor: true },
+        );
 
         setStep("confirming");
-        await publicClient.waitForTransactionReceipt({ hash });
+        await publicClient.waitForTransactionReceipt({ hash: tx.hash });
 
-        setTxHash(hash);
+        setTxHash(tx.hash);
         setStep("done");
-        return hash;
+        return tx.hash;
       } catch (err: unknown) {
         const message =
           err instanceof Error ? err.message : "Transaction failed";
@@ -243,7 +221,7 @@ export function useEscrow() {
         throw err;
       }
     },
-    [getWalletClient, getPublicClientInstance]
+    [sendTransaction, getPublicClient],
   );
 
   const reset = useCallback(() => {
