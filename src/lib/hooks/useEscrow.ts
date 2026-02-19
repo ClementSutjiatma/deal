@@ -49,6 +49,9 @@ export function useEscrow() {
 
     const provider = await embeddedWallet.getEthereumProvider();
 
+    // Request accounts first to activate the wallet
+    await provider.request({ method: "eth_requestAccounts" });
+
     // Switch to the correct chain
     try {
       await provider.request({
