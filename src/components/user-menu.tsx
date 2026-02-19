@@ -39,7 +39,7 @@ export function UserMenu() {
     );
   }
 
-  const displayName = user?.name || privyUser?.phone?.number || "Account";
+  const displayName = user?.name || privyUser?.phone?.number || privyUser?.email?.address || "Account";
 
   function handleLogout() {
     setOpen(false);
@@ -59,9 +59,9 @@ export function UserMenu() {
 
       {open && (
         <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-zinc-200 py-1 overflow-hidden">
-          {privyUser?.phone?.number && (
+          {(privyUser?.phone?.number || privyUser?.email?.address) && (
             <div className="px-4 py-2 text-xs text-zinc-400 border-b border-zinc-100">
-              {privyUser.phone.number}
+              {privyUser?.phone?.number || privyUser?.email?.address}
             </div>
           )}
           <button
