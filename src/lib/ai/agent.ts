@@ -1,6 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateText, streamText, type ModelMessage } from "ai";
-import type { Deal, Message, User } from "@/lib/types/database";
+import type { Deal, Message, User, Conversation } from "@/lib/types/database";
 
 interface DealContext {
   deal: Deal;
@@ -8,6 +8,7 @@ interface DealContext {
   buyer: User | null;
   recentMessages: Message[];
   senderRole: string;
+  conversation?: Conversation | null;
 }
 
 function buildDealCreationPrompt(): string {
@@ -66,7 +67,7 @@ After the deal is created, the conversation continues. The seller can still ask 
 }
 
 function buildDealChatPrompt(ctx: DealContext): string {
-  const { deal, seller, buyer } = ctx;
+  const { deal, seller, buyer, conversation } = ctx;
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
@@ -84,10 +85,9 @@ Current deal:
 - Seller's minimum price (HIDDEN from buyers): ${priceDisplay} total
 - Transfer method: ${deal.transfer_method || "TBD"}
 - Status: ${deal.status}
-- Chat mode: ${deal.chat_mode} (open = multi-buyer, active = locked buyer+seller, dispute = private threads)
 - Seller: ${seller.name || "Seller"}
-- Buyer: ${buyer?.name || "(none yet)"}
-- Price accepted: ${buyerOfferAccepted ? "YES" : "NO"}
+- Buyer: ${buyer?.name || "(prospective)"}
+- Price accepted: ${buyerOfferAccepted ? "YES" : "NO"}${conversation?.negotiated_price_cents ? `\n- Previously negotiated price: $${(conversation.negotiated_price_cents / 100).toFixed(2)}` : ""}
 
 Terms agreed:
 - Seller transfers within 2 hours of deposit
@@ -98,6 +98,9 @@ Terms agreed:
 - Event canceled → full refund
 
 Rules for chat:
+- You are chatting with a prospective buyer in their PRIVATE thread. The seller is NOT in this chat — you represent the seller.
+- This is a 1-on-1 conversation between you and this buyer. Other buyers have their own separate threads.
+- The buyer may be anonymous (not yet logged in). That's fine — answer their questions. They'll be prompted to log in when they want to deposit.
 - When chat_mode is "open" and price is NOT yet accepted:
   * NEVER reveal the seller's listed price to buyers. This is critical — the price must stay hidden.
   * Answer factual questions about the deal (event, venue, date, seats, transfer method).
@@ -111,7 +114,7 @@ Rules for chat:
 - When chat_mode is "active": Only buyer and seller are in the chat. Guide the transfer process. Be helpful and keep things moving.
 - When chat_mode is "dispute": You're collecting evidence privately from each side. Ask structured questions. Request screenshots. Be impartial.
 
-Rules for adjudication:
+Rules for adjudication (dispute mode only):
 - Burden of proof is on the seller (they claimed to have specific tickets)
 - If evidence is ambiguous or insufficient, default ruling favors buyer (refund)
 - Non-responsive party after 4 hours loses the dispute
@@ -132,7 +135,7 @@ Keep responses concise. No more than 2-3 short paragraphs. Be friendly but profe
 
 export async function getAIResponse(
   context: DealContext
-): Promise<{ content: string; command: string | null }> {
+): Promise<{ content: string; command: string | null; depositRequestCents: number | null }> {
   const systemPrompt = buildDealChatPrompt(context);
 
   const messages = context.recentMessages
@@ -241,9 +244,17 @@ export async function getAIResponse(
   // Extract command if present
   const commandMatch = text.match(/<command>(.*?)<\/command>/);
   const command = commandMatch ? commandMatch[1] : null;
-  const content = text.replace(/<command>.*?<\/command>/g, "").trim();
 
-  return { content, command };
+  // Extract deposit request if present
+  const depositMatch = text.match(/<deposit_request\s+amount_cents="(\d+)"\s*\/>/);
+  const depositRequestCents = depositMatch ? parseInt(depositMatch[1], 10) : null;
+
+  const content = text
+    .replace(/<command>.*?<\/command>/g, "")
+    .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
+    .trim();
+
+  return { content, command, depositRequestCents };
 }
 
 // ─── Sell chat (streaming, returns streamText result) ────────────────

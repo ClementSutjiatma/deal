@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
-import { getDepositParams } from "@/lib/escrow";
-import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT } from "@/lib/constants";
+import { sponsoredApproveAndDeposit } from "@/lib/escrow";
+import { notifyDeposit } from "@/lib/twilio";
+import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, MAX_DISCOUNT_FRACTION, CONVERSATION_STATUSES } from "@/lib/constants";
 import type { Address } from "viem";
 
 export async function POST(
@@ -16,6 +17,7 @@ export async function POST(
 
   const { id } = await params;
   const supabase = createServiceClient();
+  const { conversation_id } = await request.json();
 
   // Fetch deal
   const { data: deal } = await (supabase
@@ -33,6 +35,29 @@ export async function POST(
     return NextResponse.json({ error: "Seller cannot be buyer" }, { status: 400 });
   }
 
+  const buyerWalletId = auth.user.privy_wallet_id;
+  if (!buyerWalletId) {
+    return NextResponse.json({ error: "Buyer wallet not configured" }, { status: 400 });
+  }
+
+  // Determine price: use negotiated price from conversation if available
+  let priceCents = deal.price_cents;
+
+  if (conversation_id) {
+    const { data: conv } = await (supabase
+      .from("conversations") as any)
+      .select("negotiated_price_cents")
+      .eq("id", conversation_id)
+      .single() as { data: any };
+
+    if (conv?.negotiated_price_cents) {
+      const minPrice = Math.round(deal.price_cents * (1 - MAX_DISCOUNT_FRACTION));
+      if (conv.negotiated_price_cents >= minPrice && conv.negotiated_price_cents <= deal.price_cents) {
+        priceCents = conv.negotiated_price_cents;
+      }
+    }
+  }
+
   // Fetch seller wallet
   const { data: seller } = await (supabase
     .from("users") as any)
@@ -44,26 +69,83 @@ export async function POST(
     return NextResponse.json({ error: "Seller wallet not set up" }, { status: 400 });
   }
 
-  const depositParams = getDepositParams(
-    id,
-    seller.wallet_address as Address,
-    deal.price_cents,
-    SELLER_TRANSFER_TIMEOUT,
-    BUYER_CONFIRM_TIMEOUT
-  );
+  // Execute approve + deposit on-chain via server-side gas-sponsored tx
+  let escrow_tx_hash: string;
+  try {
+    escrow_tx_hash = await sponsoredApproveAndDeposit(
+      buyerWalletId,
+      id,
+      seller.wallet_address as Address,
+      priceCents,
+      SELLER_TRANSFER_TIMEOUT,
+      BUYER_CONFIRM_TIMEOUT
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "On-chain deposit failed";
+    console.error("sponsoredApproveAndDeposit failed:", message);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 
-  return NextResponse.json({
-    deal_id: id,
-    price_cents: deal.price_cents,
-    price_usdc: (deal.price_cents / 100).toFixed(2),
-    deposit_params: {
-      escrow_address: depositParams.escrowAddress,
-      usdc_address: depositParams.usdcAddress,
-      deal_id_bytes32: depositParams.dealId,
-      seller: depositParams.seller,
-      amount: depositParams.amount.toString(),
-      transfer_deadline: depositParams.transferDeadline.toString(),
-      confirm_deadline: depositParams.confirmDeadline.toString(),
-    },
+  // Atomic claim
+  const { data: claimed, error: claimErr } = await (supabase.rpc as any)("claim_deal", {
+    p_deal_id: id,
+    p_buyer_id: auth.user.id,
   });
+
+  if (claimErr) {
+    return NextResponse.json({ error: claimErr.message }, { status: 500 });
+  }
+  if (!claimed) {
+    return NextResponse.json({ error: "Deal already claimed" }, { status: 409 });
+  }
+
+  // Update escrow tx hash
+  await (supabase.from("deals") as any)
+    .update({ escrow_tx_hash })
+    .eq("id", id);
+
+  // Update conversation statuses
+  if (conversation_id) {
+    await (supabase.from("conversations") as any)
+      .update({ status: CONVERSATION_STATUSES.CLAIMED })
+      .eq("id", conversation_id);
+    await (supabase.from("conversations") as any)
+      .update({ status: CONVERSATION_STATUSES.CLOSED })
+      .eq("deal_id", id)
+      .neq("id", conversation_id);
+  }
+
+  // Log event
+  await (supabase.from("deal_events") as any).insert({
+    deal_id: id,
+    event_type: "funded",
+    actor_id: auth.user.id,
+    metadata: { escrow_tx_hash, conversation_id },
+  });
+
+  // SMS to seller
+  const { data: sellerUser } = await (supabase.from("users") as any)
+    .select("phone")
+    .eq("id", deal.seller_id)
+    .single() as { data: any };
+
+  if (sellerUser?.phone) {
+    const amount = `$${(priceCents / 100).toFixed(2)}`;
+    try {
+      await notifyDeposit(sellerUser.phone, deal.short_code, amount);
+    } catch (e) {
+      console.error("SMS notification failed:", e);
+    }
+  }
+
+  // AI message
+  await (supabase.from("messages") as any).insert({
+    deal_id: id,
+    conversation_id: conversation_id || null,
+    role: "ai",
+    content: `$${(priceCents / 100).toFixed(2)} locked in escrow. Seller, please transfer the tickets within 2 hours.`,
+    visibility: "all",
+  });
+
+  return NextResponse.json({ success: true, tx_hash: escrow_tx_hash });
 }

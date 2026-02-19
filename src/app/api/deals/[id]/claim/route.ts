@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
 import { verifyTxReceipt } from "@/lib/escrow";
 import { notifyDeposit } from "@/lib/twilio";
+import { CONVERSATION_STATUSES } from "@/lib/constants";
 
 export async function POST(
   request: NextRequest,
@@ -15,7 +16,7 @@ export async function POST(
 
   const { id } = await params;
   const supabase = createServiceClient();
-  const { escrow_tx_hash } = await request.json();
+  const { escrow_tx_hash, conversation_id } = await request.json();
 
   if (!escrow_tx_hash) {
     return NextResponse.json({ error: "Missing escrow_tx_hash" }, { status: 400 });
@@ -47,20 +48,49 @@ export async function POST(
     .update({ escrow_tx_hash })
     .eq("id", id);
 
+  // Update conversation statuses
+  if (conversation_id) {
+    // Mark winning conversation as claimed
+    await (supabase
+      .from("conversations") as any)
+      .update({ status: CONVERSATION_STATUSES.CLAIMED })
+      .eq("id", conversation_id);
+
+    // Close all other conversations for this deal
+    await (supabase
+      .from("conversations") as any)
+      .update({ status: CONVERSATION_STATUSES.CLOSED })
+      .eq("deal_id", id)
+      .neq("id", conversation_id);
+  }
+
   // Log event
   await (supabase.from("deal_events") as any).insert({
     deal_id: id,
     event_type: "funded",
     actor_id: auth.user.id,
-    metadata: { escrow_tx_hash },
+    metadata: { escrow_tx_hash, conversation_id },
   });
 
   // Fetch deal + seller for SMS notification
   const { data: deal } = await (supabase.from("deals") as any).select("*, seller:users!deals_seller_id_fkey(*)").eq("id", id).single() as { data: any };
 
+  // Get the actual deposit amount (may be negotiated)
+  let depositAmount = deal?.price_cents || 0;
+  if (conversation_id) {
+    const { data: conv } = await (supabase
+      .from("conversations") as any)
+      .select("negotiated_price_cents")
+      .eq("id", conversation_id)
+      .single() as { data: any };
+    if (conv?.negotiated_price_cents) {
+      depositAmount = conv.negotiated_price_cents;
+    }
+  }
+
   if (deal?.seller) {
     const seller = deal.seller as any;
-    const amount = `$${(deal.price_cents / 100).toFixed(2)}`;
+    const amount = `$${(depositAmount / 100).toFixed(2)}`;
     try {
       await notifyDeposit(seller.phone, deal.short_code, amount);
     } catch (e) {
@@ -68,11 +98,12 @@ export async function POST(
     }
   }
 
-  // Insert AI message about deposit
+  // Insert AI message about deposit (in the winning conversation)
   await (supabase.from("messages") as any).insert({
     deal_id: id,
+    conversation_id: conversation_id || null,
     role: "ai",
-    content: `$${(deal!.price_cents / 100).toFixed(2)} locked in escrow. Seller, please transfer the tickets within 2 hours.`,
+    content: `$${(depositAmount / 100).toFixed(2)} locked in escrow. Seller, please transfer the tickets within 2 hours.`,
     visibility: "all",
   });
 

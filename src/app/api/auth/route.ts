@@ -21,13 +21,14 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServiceClient();
   const body = await request.json();
-  const phone = body.phone as string;
+  const phone = (body.phone as string) || null;
+  const email = (body.email as string) || null;
   const name = (body.name as string) || null;
   const wallet_address = (body.wallet_address as string) || null;
 
-  if (!phone) {
+  if (!phone && !email) {
     return NextResponse.json(
-      { error: "Missing phone" },
+      { error: "Missing phone or email" },
       { status: 400 }
     );
   }
@@ -43,10 +44,10 @@ export async function POST(request: NextRequest) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data, error } = await (supabase.from("users") as any)
       .update({
-        phone,
+        ...(phone && { phone, phone_verified_at: new Date().toISOString() }),
+        ...(email && { email, email_verified_at: new Date().toISOString() }),
         name: name || existing.name,
         wallet_address: wallet_address || existing.wallet_address,
-        phone_verified_at: new Date().toISOString(),
       })
       .eq("id", existing.id)
       .select()
@@ -63,9 +64,11 @@ export async function POST(request: NextRequest) {
     .insert({
       privy_user_id: privyUserId,
       phone,
+      email,
       name,
       wallet_address,
-      phone_verified_at: new Date().toISOString(),
+      ...(phone && { phone_verified_at: new Date().toISOString() }),
+      ...(email && { email_verified_at: new Date().toISOString() }),
     })
     .select()
     .single();

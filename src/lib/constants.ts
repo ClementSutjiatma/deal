@@ -23,6 +23,17 @@ export const CHAT_MODES = {
 
 export type ChatMode = (typeof CHAT_MODES)[keyof typeof CHAT_MODES];
 
+export const CONVERSATION_STATUSES = {
+  ACTIVE: "active",
+  CLAIMED: "claimed",
+  CLOSED: "closed",
+} as const;
+
+export type ConversationStatus = (typeof CONVERSATION_STATUSES)[keyof typeof CONVERSATION_STATUSES];
+
+// Maximum discount the AI can offer (as fraction of original price)
+export const MAX_DISCOUNT_FRACTION = 0.2; // 20% max discount
+
 export const MESSAGE_ROLES = {
   SELLER: "seller",
   BUYER: "buyer",

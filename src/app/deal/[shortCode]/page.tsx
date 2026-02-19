@@ -5,12 +5,16 @@ import { usePrivy, useWallets, useFundWallet } from "@privy-io/react-auth";
 import { useAppUser } from "@/components/providers";
 import { ProgressTracker } from "@/components/progress-tracker";
 import { Chat } from "@/components/chat";
+import { SellerDashboard } from "@/components/seller-dashboard";
+import { ConversationReadView } from "@/components/conversation-read-view";
+import { ListingsDropdown } from "@/components/listings-dropdown";
 import { Copy, Check, ExternalLink, Lock, Clock, AlertTriangle, Loader2, Plus, Wallet } from "lucide-react";
 import { useEscrow, type EscrowStep } from "@/lib/hooks/useEscrow";
 import { useUsdcBalance } from "@/lib/hooks/useUsdcBalance";
-import type { Deal } from "@/lib/types/database";
+import { useAnonymousId, clearAnonymousId } from "@/lib/hooks/useAnonymousId";
+import { createClient } from "@/lib/supabase/client";
+import type { Deal, Conversation } from "@/lib/types/database";
 import type { DealStatus } from "@/lib/constants";
-import { keccak256, toHex } from "viem";
 import { base } from "viem/chains";
 
 const STEP_LABELS: Record<EscrowStep, string> = {
@@ -24,23 +28,30 @@ const STEP_LABELS: Record<EscrowStep, string> = {
   error: "Transaction failed",
 };
 
-function makeDealIdBytes32(dealUuid: string): `0x${string}` {
-  return keccak256(toHex(dealUuid));
-}
-
 export default function DealPage({ params }: { params: Promise<{ shortCode: string }> }) {
   const { shortCode } = use(params);
-  const { authenticated, login, getAccessToken } = usePrivy();
-  const { user } = useAppUser();
+  const { authenticated, login, user: privyUser, getAccessToken } = usePrivy();
+  const { user, syncUser } = useAppUser();
   const [deal, setDeal] = useState<(Deal & { seller: { id: string; name: string | null } }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Buyer conversation state
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationStatus, setConversationStatus] = useState<string | null>(null);
+  const [negotiatedPriceCents, setNegotiatedPriceCents] = useState<number | null>(null);
+
+  // Seller dashboard state
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedBuyerName, setSelectedBuyerName] = useState<string>("");
+
   const escrow = useEscrow();
   const { wallets } = useWallets();
   const { fundWallet } = useFundWallet();
   const [fundingLoading, setFundingLoading] = useState(false);
+  const [depositLoading, setDepositLoading] = useState(false);
+  const [depositError, setDepositError] = useState<string | null>(null);
 
   // Get embedded wallet address for balance checking
   const embeddedWallet = wallets.find((w) => w.walletClientType === "privy");
@@ -49,6 +60,10 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const { balance: usdcBalance, formatted: usdcFormatted, refetch: refetchBalance } = useUsdcBalance(walletAddress);
 
   const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === "84532";
+  const supabase = createClient();
+
+  // Anonymous buyer ID (generated per-deal, stored in localStorage)
+  const anonymousId = useAnonymousId(deal?.id);
 
   /** Helper to make authenticated API calls */
   async function authFetch(url: string, options: RequestInit = {}) {
@@ -85,6 +100,143 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     return () => clearInterval(interval);
   }, [fetchDeal]);
 
+  // Sync Privy user -> app user (populates privy_wallet_id, wallet_address, etc.)
+  const [hasSynced, setHasSynced] = useState(false);
+  useEffect(() => {
+    if (authenticated && privyUser && !hasSynced && (!user || !user.privy_wallet_id)) {
+      (async () => {
+        const token = await getAccessToken();
+        if (token) {
+          await syncUser(privyUser, token);
+          setHasSynced(true);
+        }
+      })();
+    }
+  }, [authenticated, privyUser, user, syncUser, hasSynced, getAccessToken]);
+
+  // Fetch/create buyer conversation when deal loads
+  // Handles: authenticated buyers, anonymous buyers, and sellers on post-OPEN deals
+  useEffect(() => {
+    if (!deal) return;
+
+    const isSeller = user?.id === deal.seller_id;
+
+    if (isSeller) {
+      // Seller: only need conversation scoping for post-OPEN deals with a buyer
+      if (deal.status === "OPEN" || !deal.buyer_id) return;
+
+      async function fetchClaimedConversation() {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations?seller_id=${user!.id}`);
+        if (res.ok) {
+          const convs: Conversation[] = await res.json();
+          const claimed = convs.find((c) => c.status === "claimed");
+          if (claimed) {
+            setConversationId(claimed.id);
+            setConversationStatus(claimed.status);
+            if (claimed.negotiated_price_cents) {
+              setNegotiatedPriceCents(claimed.negotiated_price_cents);
+            }
+          }
+        }
+      }
+      fetchClaimedConversation();
+      return;
+    }
+
+    // Authenticated buyer
+    if (user) {
+      if (deal.status !== "OPEN" && user.id !== deal.buyer_id) return;
+
+      async function initAuthenticatedConversation() {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations?buyer_id=${user!.id}`);
+        if (res.ok) {
+          const conv: Conversation = await res.json();
+          setConversationId(conv.id);
+          setConversationStatus(conv.status);
+          if (conv.negotiated_price_cents) {
+            setNegotiatedPriceCents(conv.negotiated_price_cents);
+          }
+        }
+      }
+      initAuthenticatedConversation();
+      return;
+    }
+
+    // Anonymous buyer (not authenticated, deal is OPEN)
+    if (!authenticated && deal.status === "OPEN" && anonymousId) {
+      async function initAnonymousConversation() {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations?anonymous_id=${anonymousId}`);
+        if (res.ok) {
+          const conv: Conversation = await res.json();
+          setConversationId(conv.id);
+          setConversationStatus(conv.status);
+        }
+      }
+      initAnonymousConversation();
+    }
+  }, [deal?.id, deal?.seller_id, deal?.status, deal?.buyer_id, user?.id, authenticated, anonymousId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auth transition: claim anonymous conversation when user logs in
+  useEffect(() => {
+    if (!user || !anonymousId || !deal || !conversationId) return;
+    if (user.id === deal.seller_id) return; // seller doesn't claim
+
+    async function claimAnonymousConversation() {
+      try {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations/claim`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            anonymous_id: anonymousId,
+            buyer_id: user!.id,
+          }),
+        });
+        if (res.ok) {
+          const conv: Conversation = await res.json();
+          setConversationId(conv.id);
+          setConversationStatus(conv.status);
+          if (conv.negotiated_price_cents) {
+            setNegotiatedPriceCents(conv.negotiated_price_cents);
+          }
+          // Clear the anonymous ID from localStorage
+          clearAnonymousId(deal!.id);
+        }
+      } catch {
+        // Claim failed -- not critical, user can still chat with new conversation
+      }
+    }
+    claimAnonymousConversation();
+  }, [user?.id, anonymousId, deal?.id, conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Subscribe to conversation status changes (for buyer -- detect "closed")
+  useEffect(() => {
+    if (!conversationId) return;
+
+    const channel = supabase
+      .channel(`conv-status:${conversationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "conversations",
+          filter: `id=eq.${conversationId}`,
+        },
+        (payload) => {
+          const updated = payload.new as Conversation;
+          setConversationStatus(updated.status);
+          if (updated.negotiated_price_cents) {
+            setNegotiatedPriceCents(updated.negotiated_price_cents);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [conversationId, supabase]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -103,108 +255,120 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
 
   const isSeller = user?.id === deal.seller_id;
   const isBuyer = user?.id === deal.buyer_id;
-  const userRole: "seller" | "buyer" | null = isSeller ? "seller" : "buyer";
-  const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
+  // Anonymous users get "buyer" role when deal is OPEN (can ask questions via chat)
+  const userRole: "seller" | "buyer" | null = isSeller
+    ? "seller"
+    : isBuyer
+      ? "buyer"
+      : (authenticated || deal.status === "OPEN")
+        ? "buyer"
+        : null;
+  const effectivePrice = negotiatedPriceCents ?? deal.price_cents;
+  const priceDisplay = `$${(effectivePrice / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
-  const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";
-  const dealBytes32 = makeDealIdBytes32(deal.id);
+  const isConversationClosed = conversationStatus === "closed";
 
-  // ─── On-chain deposit flow ───────────────────────────────────
+  // --- Server-side deposit flow ---
   async function handleDeposit() {
     if (!authenticated) { login(); return; }
-    if (!user) return;
+    if (!user) {
+      if (privyUser) {
+        const token = await getAccessToken();
+        if (token) await syncUser(privyUser, token);
+      }
+      setDepositError("Your account is still loading. Please try again in a moment.");
+      return;
+    }
+
+    setDepositLoading(true);
+    setDepositError(null);
 
     try {
-      // 1. Get deposit params from API
-      const depositRes = await authFetch(`/api/deals/${deal!.id}/deposit`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/deposit`, {
         method: "POST",
+        body: JSON.stringify({ conversation_id: conversationId }),
       });
 
-      if (!depositRes.ok) {
-        const data = await depositRes.json();
-        alert(data.error || "Failed to get deposit parameters");
-        return;
-      }
-
-      const { deposit_params } = await depositRes.json();
-
-      // 2. Execute on-chain deposit (approve + deposit)
-      const txHash = await escrow.deposit(deposit_params);
-
-      // 3. Claim deal in DB with tx hash
-      const claimRes = await authFetch(`/api/deals/${deal!.id}/claim`, {
-        method: "POST",
-        body: JSON.stringify({ escrow_tx_hash: txHash }),
-      });
-
-      if (!claimRes.ok) {
-        const data = await claimRes.json();
-        alert(data.error || "Failed to claim deal");
+      if (!res.ok) {
+        const data = await res.json();
+        setDepositError(data.error || "Deposit failed");
         return;
       }
 
       fetchDeal();
-    } catch {
-      // On-chain tx failed
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Deposit failed";
+      setDepositError(message);
+    } finally {
+      setDepositLoading(false);
     }
   }
 
-  // ─── On-chain transfer flow ──────────────────────────────────
+  // --- Server-side transfer flow (gas-sponsored) ---
   async function handleTransfer() {
     if (!user) return;
-
+    escrow.setLoading("transferring");
     try {
-      const txHash = await escrow.markTransferred(dealBytes32, escrowAddr);
-
-      await authFetch(`/api/deals/${deal!.id}/transfer`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/transfer`, {
         method: "POST",
-        body: JSON.stringify({ transfer_tx_hash: txHash }),
+        body: JSON.stringify({}),
       });
-
+      if (!res.ok) {
+        const data = await res.json();
+        escrow.setError(data.error || "Transfer failed");
+        return;
+      }
+      escrow.setDone();
       fetchDeal();
-    } catch {
-      // Error set in hook
+    } catch (err) {
+      escrow.setError(err instanceof Error ? err.message : "Transfer failed");
     }
   }
 
-  // ─── On-chain confirm flow ───────────────────────────────────
+  // --- Server-side confirm flow (gas-sponsored) ---
   async function handleConfirm() {
     if (!user) return;
-
+    escrow.setLoading("confirming");
     try {
-      const txHash = await escrow.confirmReceipt(dealBytes32, escrowAddr);
-
-      await authFetch(`/api/deals/${deal!.id}/confirm`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/confirm`, {
         method: "POST",
-        body: JSON.stringify({ confirm_tx_hash: txHash }),
+        body: JSON.stringify({}),
       });
-
+      if (!res.ok) {
+        const data = await res.json();
+        escrow.setError(data.error || "Confirm failed");
+        return;
+      }
+      escrow.setDone();
       fetchDeal();
-    } catch {
-      // Error set in hook
+    } catch (err) {
+      escrow.setError(err instanceof Error ? err.message : "Confirm failed");
     }
   }
 
-  // ─── On-chain dispute flow ───────────────────────────────────
+  // --- Server-side dispute flow (gas-sponsored) ---
   async function handleDispute() {
     if (!user) return;
-
+    escrow.setLoading("disputing");
     try {
-      const txHash = await escrow.openDispute(dealBytes32, escrowAddr);
-
-      await authFetch(`/api/deals/${deal!.id}/dispute`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/dispute`, {
         method: "POST",
-        body: JSON.stringify({ dispute_tx_hash: txHash }),
+        body: JSON.stringify({}),
       });
-
+      if (!res.ok) {
+        const data = await res.json();
+        escrow.setError(data.error || "Dispute failed");
+        return;
+      }
+      escrow.setDone();
       fetchDeal();
-    } catch {
-      // Error set in hook
+    } catch (err) {
+      escrow.setError(err instanceof Error ? err.message : "Dispute failed");
     }
   }
 
-  // ─── Fund wallet flow ───────────────────────────────────────
+  // --- Fund wallet flow ---
   async function handleFundWallet() {
     if (!authenticated) { login(); return; }
     if (!walletAddress) return;
@@ -239,7 +403,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
           options: {
             chain: base,
             asset: "USDC",
-            amount: deal ? String(deal.price_cents / 100) : "10",
+            amount: deal ? String(effectivePrice / 100) : "10",
           },
         });
         // After modal closes, refresh balance
@@ -268,13 +432,26 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     return `${hours}h ${mins}m`;
   }
 
+  // --- Render seller's conversation detail view ---
+  if (isSeller && deal.status === "OPEN" && selectedConvId) {
+    return (
+      <div className="flex flex-col h-screen max-w-lg mx-auto pt-14">
+        <ConversationReadView
+          dealId={deal.id}
+          conversationId={selectedConvId}
+          buyerName={selectedBuyerName}
+          onBack={() => { setSelectedConvId(null); setSelectedBuyerName(""); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen max-w-lg mx-auto">
       {/* Deal header */}
-      <div className="px-4 py-4 border-b border-zinc-200 space-y-4">
-        <ProgressTracker status={deal.status as DealStatus} />
-
-        <div>
+      <div className="px-4 pt-14 pb-4 border-b border-zinc-200 space-y-4">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
           <h1 className="text-lg font-bold">{deal.event_name}</h1>
           <p className="text-sm text-zinc-500">
             {[
@@ -289,7 +466,14 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             {deal.seats ? `, Seats ${deal.seats}` : ""}
             {deal.transfer_method ? ` · ${deal.transfer_method}` : ""}
           </p>
+          </div>
+          {/* Listings dropdown -- top right */}
+          {isSeller && user && (
+            <ListingsDropdown sellerId={user.id} currentDealId={deal.id} />
+          )}
         </div>
+
+        <ProgressTracker status={deal.status as DealStatus} />
 
         {/* Seller share link */}
         {deal.status === "OPEN" && isSeller && (
@@ -351,12 +535,19 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         </div>
       )}
 
+      {/* Conversation closed banner */}
+      {isConversationClosed && deal.status !== "OPEN" && (
+        <div className="px-4 py-3 bg-zinc-50 border-b border-zinc-200">
+          <p className="text-sm text-zinc-500 text-center">This deal was claimed by another buyer.</p>
+        </div>
+      )}
+
       {/* On-chain transaction status banner */}
-      {escrow.isLoading && (
+      {(escrow.isLoading || depositLoading) && (
         <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center gap-2">
           <Loader2 className="w-4 h-4 animate-spin text-orange-500" />
           <span className="text-sm text-orange-700 font-medium">
-            {STEP_LABELS[escrow.step]}
+            {depositLoading ? "Processing deposit..." : STEP_LABELS[escrow.step]}
           </span>
         </div>
       )}
@@ -370,24 +561,57 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         </div>
       )}
 
-      {/* Chat */}
+      {depositError && (
+        <div className="px-4 py-3 bg-red-50 border-b border-red-200">
+          <p className="text-sm text-red-700">{depositError}</p>
+          <button onClick={() => setDepositError(null)} className="text-xs text-red-500 underline mt-1">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Chat / Dashboard area */}
       <div className="flex-1 overflow-hidden">
-        <Chat
-          dealId={deal.id}
-          userId={user?.id || null}
-          userRole={userRole}
-          chatMode={deal.chat_mode}
-          disabled={isTerminal || (!isSeller && !isBuyer && deal.status !== "OPEN")}
-          placeholder={deal.status === "OPEN" && !isSeller ? (buyerOfferAccepted ? "Ask a question..." : "Make an offer...") : "Type a message..."}
-        />
+        {/* Seller sees dashboard when deal is OPEN */}
+        {isSeller && deal.status === "OPEN" ? (
+          <SellerDashboard
+            dealId={deal.id}
+            sellerId={user!.id}
+            onSelectConversation={(convId, name) => {
+              setSelectedConvId(convId);
+              setSelectedBuyerName(name);
+            }}
+          />
+        ) : (!isSeller && !conversationId) || (isSeller && deal.status !== "OPEN" && deal.buyer_id && !conversationId) ? (
+          /* Waiting for conversation to load (both anonymous and authenticated) */
+          <div className="flex items-center justify-center h-full">
+            <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : (
+          /* Both anonymous and authenticated users see Chat */
+          <Chat
+            dealId={deal.id}
+            userId={user?.id || null}
+            userRole={userRole}
+            chatMode={deal.chat_mode}
+            conversationId={conversationId}
+            anonymousId={!authenticated ? anonymousId : null}
+            disabled={isTerminal || isConversationClosed || (!isSeller && !isBuyer && deal.status !== "OPEN")}
+            placeholder={deal.status === "OPEN" && !isSeller ? (buyerOfferAccepted ? "Ask a question..." : "Make an offer...") : "Type a message..."}
+            onDepositRequest={(cents) => setNegotiatedPriceCents(cents)}
+            onDeposit={handleDeposit}
+            onLogin={!authenticated ? login : undefined}
+            depositLoading={depositLoading}
+          />
+        )}
       </div>
 
       {/* Action buttons */}
-      {!isTerminal && (
+      {!isTerminal && !isConversationClosed && (
         <div className="border-t border-zinc-200 px-4 py-3 space-y-2">
           {deal.status === "OPEN" && !isSeller && buyerOfferAccepted && (() => {
             // USDC has 6 decimals; price_cents / 100 = dollars, * 1e6 = USDC units
-            const requiredAmount = BigInt(deal.price_cents) * BigInt(10000);
+            const requiredAmount = BigInt(effectivePrice) * BigInt(10000);
             const hasEnough = usdcBalance !== null && usdcBalance >= requiredAmount;
 
             return (
@@ -401,7 +625,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                     </span>
                     {!hasEnough && (
                       <span className="text-orange-500">
-                        Need {(deal.price_cents / 100).toFixed(2)} USDC
+                        Need {(effectivePrice / 100).toFixed(2)} USDC
                       </span>
                     )}
                   </div>
@@ -430,24 +654,26 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                   </button>
                 )}
 
-                {/* Deposit button */}
-                <button
-                  onClick={handleDeposit}
-                  disabled={escrow.isLoading || (authenticated && !hasEnough)}
-                  className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
-                >
-                  {escrow.isLoading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      {STEP_LABELS[escrow.step]}
-                    </>
-                  ) : (
-                    <>
-                      <Lock className="w-5 h-5" />
-                      Deposit {priceDisplay}
-                    </>
-                  )}
-                </button>
+                {/* Deposit button -- only show if no AI deposit prompt yet, as a fallback */}
+                {!negotiatedPriceCents && (
+                  <button
+                    onClick={handleDeposit}
+                    disabled={depositLoading || (authenticated && !hasEnough)}
+                    className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
+                  >
+                    {depositLoading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Processing deposit...
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-5 h-5" />
+                        Deposit {priceDisplay}
+                      </>
+                    )}
+                  </button>
+                )}
               </>
             );
           })()}
@@ -484,7 +710,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                 ) : (
                   <>
                     <Check className="w-5 h-5" />
-                    Got them — release funds
+                    Got them -- release funds
                   </>
                 )}
               </button>

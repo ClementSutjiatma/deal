@@ -1,6 +1,7 @@
 import {
   createPublicClient,
   createWalletClient,
+  encodeFunctionData,
   http,
   keccak256,
   toHex,
@@ -89,6 +90,125 @@ export async function triggerAutoRelease(dealUuid: string): Promise<string> {
     args: [dealId],
   });
 
+  return hash;
+}
+
+/**
+ * Send a gas-sponsored transaction from a user's embedded wallet.
+ * Uses Privy's walletApi server-side so the user doesn't need ETH.
+ */
+async function sponsoredSendTransaction(
+  walletId: string,
+  to: Address,
+  data: `0x${string}`
+): Promise<string> {
+  const privy = getPrivyClient();
+  const caip2 = `eip155:${chain.id}` as const;
+
+  const response = await (privy as any).walletApi.ethereum.sendTransaction({
+    walletId,
+    caip2,
+    sponsor: true,
+    transaction: { to, data },
+  });
+
+  return response.hash;
+}
+
+export async function sponsoredApproveAndDeposit(
+  buyerWalletId: string,
+  dealUuid: string,
+  sellerAddress: Address,
+  priceCents: number,
+  transferDeadlineSeconds: number,
+  confirmDeadlineSeconds: number
+): Promise<string> {
+  const params = getDepositParams(
+    dealUuid,
+    sellerAddress,
+    priceCents,
+    transferDeadlineSeconds,
+    confirmDeadlineSeconds
+  );
+
+  const approveData = encodeFunctionData({
+    abi: ERC20_ABI,
+    functionName: "approve",
+    args: [escrowAddress, params.amount],
+  });
+  await sponsoredSendTransaction(buyerWalletId, usdcAddress, approveData);
+
+  const publicClient = getPublicClient();
+  // Small delay to ensure approve is indexed
+  await new Promise((r) => setTimeout(r, 2000));
+
+  const depositData = encodeFunctionData({
+    abi: ESCROW_ABI,
+    functionName: "deposit",
+    args: [
+      params.dealId,
+      params.seller,
+      params.amount,
+      params.transferDeadline,
+      params.confirmDeadline,
+    ],
+  });
+  const hash = await sponsoredSendTransaction(
+    buyerWalletId,
+    escrowAddress,
+    depositData
+  );
+
+  // Wait for on-chain confirmation
+  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
+  return hash;
+}
+
+export async function sponsoredMarkTransferred(
+  sellerWalletId: string,
+  dealUuid: string
+): Promise<string> {
+  const dealId = dealIdToBytes32(dealUuid);
+  const data = encodeFunctionData({
+    abi: ESCROW_ABI,
+    functionName: "markTransferred",
+    args: [dealId],
+  });
+  const hash = await sponsoredSendTransaction(sellerWalletId, escrowAddress, data);
+  const publicClient = getPublicClient();
+  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
+  return hash;
+}
+
+export async function sponsoredConfirm(
+  buyerWalletId: string,
+  dealUuid: string
+): Promise<string> {
+  const dealId = dealIdToBytes32(dealUuid);
+  const data = encodeFunctionData({
+    abi: ESCROW_ABI,
+    functionName: "confirm",
+    args: [dealId],
+  });
+  const hash = await sponsoredSendTransaction(buyerWalletId, escrowAddress, data);
+  const publicClient = getPublicClient();
+  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
+  return hash;
+}
+
+export async function sponsoredDispute(
+  buyerWalletId: string,
+  dealUuid: string
+): Promise<string> {
+  const dealId = dealIdToBytes32(dealUuid);
+  const data = encodeFunctionData({
+    abi: ESCROW_ABI,
+    functionName: "dispute",
+    args: [dealId],
+  });
+  const hash = await sponsoredSendTransaction(buyerWalletId, escrowAddress, data);
+  const publicClient = getPublicClient();
+  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
   return hash;
 }
 

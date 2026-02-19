@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
+import { DepositPrompt } from "@/components/deposit-prompt";
 import { MarkdownText } from "@/components/markdown-text";
 import type { Message } from "@/lib/types/database";
 
@@ -12,11 +13,41 @@ interface Props {
   userId: string | null;
   userRole: "seller" | "buyer" | null;
   chatMode: string;
+  conversationId?: string | null;
+  anonymousId?: string | null;
   disabled?: boolean;
   placeholder?: string;
+  onDepositRequest?: (amountCents: number) => void;
+  depositLoading?: boolean;
+  onDeposit?: () => void;
+  onLogin?: () => void;
 }
 
-export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder }: Props) {
+/** Strip deposit_request tags from displayed message content */
+function cleanDepositTag(text: string): string {
+  return text.replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "").trim();
+}
+
+/** Extract deposit_request amount from message content */
+function extractDepositRequest(text: string): number | null {
+  const match = text.match(/<deposit_request\s+amount_cents="(\d+)"\s*\/>/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+export function Chat({
+  dealId,
+  userId,
+  userRole,
+  chatMode,
+  conversationId,
+  anonymousId,
+  disabled,
+  placeholder,
+  onDepositRequest,
+  depositLoading,
+  onDeposit,
+  onLogin,
+}: Props) {
   const { getAccessToken } = usePrivy();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -30,32 +61,54 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
   // Fetch initial messages
   useEffect(() => {
     async function fetchMessages() {
+      // Buyers must have a conversationId before fetching
+      if (userRole === "buyer" && !conversationId) return;
+
+      const params = new URLSearchParams();
+      if (conversationId) params.set("conversation_id", conversationId);
+
       const headers: Record<string, string> = {};
       const token = await getAccessToken();
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const res = await fetch(`/api/deals/${dealId}/messages`, { headers });
+      const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
       if (res.ok) {
         const data = await res.json();
         setMessages(data);
+
+        // Check for deposit requests in existing messages
+        if (onDepositRequest) {
+          for (const msg of data) {
+            if (msg.metadata?.deposit_request_cents) {
+              onDepositRequest(msg.metadata.deposit_request_cents);
+            }
+          }
+        }
       }
     }
     fetchMessages();
-  }, [dealId, getAccessToken]);
+  }, [dealId, userId, conversationId, getAccessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Subscribe to realtime
   useEffect(() => {
+    // Buyers must have a conversationId before subscribing
+    if (userRole === "buyer" && !conversationId) return;
+
+    // Use conversation_id filter when available, otherwise fall back to deal_id
+    const filterColumn = conversationId ? "conversation_id" : "deal_id";
+    const filterValue = conversationId || dealId;
+
     const channel = supabase
-      .channel(`messages:${dealId}`)
+      .channel(`messages:${filterValue}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "messages",
-          filter: `deal_id=eq.${dealId}`,
+          filter: `${filterColumn}=eq.${filterValue}`,
         },
         (payload) => {
           const newMsg = payload.new as Message;
@@ -68,6 +121,14 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
             if (prev.some((m) => m.id === newMsg.id)) return prev;
             return [...prev, newMsg];
           });
+
+          // Check for deposit request in new AI messages
+          if (newMsg.role === "ai" && onDepositRequest) {
+            const meta = newMsg.metadata as Record<string, unknown> | null;
+            if (meta?.deposit_request_cents) {
+              onDepositRequest(meta.deposit_request_cents as number);
+            }
+          }
         }
       )
       .subscribe();
@@ -75,7 +136,7 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [dealId, userId, userRole, chatMode, supabase]);
+  }, [dealId, conversationId, userId, userRole, chatMode, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll
   useEffect(() => {
@@ -137,14 +198,17 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
     return urls;
   }
 
+  // Can send if: has a role AND (seller OR has conversationId for buyers)
+  const canSend = !!userRole && (userRole === "seller" || !!conversationId);
+
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
-    if ((!input.trim() && pendingFiles.length === 0) || !userRole || sending) return;
+    if ((!input.trim() && pendingFiles.length === 0) || !canSend || sending) return;
 
     setSending(true);
     try {
-      // Upload images first
-      const mediaUrls = await uploadFiles();
+      // Upload images first (only for authenticated users -- anonymous can't upload)
+      const mediaUrls = userId ? await uploadFiles() : [];
 
       const token = await getAccessToken();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -157,6 +221,8 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
         headers,
         body: JSON.stringify({
           content: input.trim() || (mediaUrls.length > 0 ? "[image]" : ""),
+          conversation_id: conversationId || undefined,
+          anonymous_id: anonymousId || undefined,
           media_urls: mediaUrls.length > 0 ? mediaUrls : undefined,
         }),
       });
@@ -176,44 +242,59 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
     <div className="flex flex-col h-full">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.role === userRole ? "justify-end" : "justify-start"}`}
-          >
+        {messages.map((msg) => {
+          const meta = msg.metadata as Record<string, unknown> | null;
+          const depositCents = meta?.deposit_request_cents as number | undefined;
+          const displayContent = cleanDepositTag(msg.content);
+
+          return (
             <div
-              className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
-                msg.role === "ai" || msg.role === "system"
-                  ? "bg-zinc-100 text-zinc-700"
-                  : msg.role === userRole
-                    ? "bg-orange-500 text-white"
-                    : "bg-zinc-200 text-zinc-900"
-              }`}
+              key={msg.id}
+              className={`flex ${msg.role === userRole ? "justify-end" : "justify-start"}`}
             >
-              {msg.role !== userRole && msg.role !== "ai" && msg.role !== "system" && (
-                <div className="text-xs font-semibold mb-1 opacity-70">
-                  {msg.role === "seller" ? "Seller" : "Buyer"}
-                </div>
-              )}
-              {msg.role === "ai" && (
-                <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
-              )}
-              <MarkdownText>{msg.content}</MarkdownText>
-              {msg.media_urls && msg.media_urls.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {msg.media_urls.map((url, i) => (
-                    <img
-                      key={i}
-                      src={url}
-                      alt="attachment"
-                      className="rounded-lg max-w-full max-h-48 object-cover"
-                    />
-                  ))}
-                </div>
-              )}
+              <div
+                className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
+                  msg.role === "ai" || msg.role === "system"
+                    ? "bg-zinc-100 text-zinc-700"
+                    : msg.role === userRole
+                      ? "bg-orange-500 text-white"
+                      : "bg-zinc-200 text-zinc-900"
+                }`}
+              >
+                {msg.role !== userRole && msg.role !== "ai" && msg.role !== "system" && (
+                  <div className="text-xs font-semibold mb-1 opacity-70">
+                    {msg.role === "seller" ? "Seller" : "Buyer"}
+                  </div>
+                )}
+                {msg.role === "ai" && (
+                  <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+                )}
+                <MarkdownText>{displayContent}</MarkdownText>
+                {msg.media_urls && msg.media_urls.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {msg.media_urls.map((url, i) => (
+                      <img
+                        key={i}
+                        src={url}
+                        alt="attachment"
+                        className="rounded-lg max-w-full max-h-48 object-cover"
+                      />
+                    ))}
+                  </div>
+                )}
+                {/* Inline deposit prompt for AI messages with deposit request */}
+                {msg.role === "ai" && depositCents && userRole === "buyer" && onDeposit && (
+                  <DepositPrompt
+                    amountCents={depositCents}
+                    onDeposit={onDeposit}
+                    disabled={disabled}
+                    loading={depositLoading}
+                  />
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 
@@ -239,7 +320,7 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
       )}
 
       {/* Input */}
-      {!disabled && userRole && (
+      {!disabled && canSend && (
         <form onSubmit={sendMessage} className="border-t border-zinc-200 px-4 py-3 flex gap-2">
           <input
             ref={fileInputRef}
@@ -249,18 +330,21 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
             className="hidden"
             onChange={handleFileSelect}
           />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-              pendingFiles.length > 0
-                ? "bg-orange-100 text-orange-600"
-                : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
-            }`}
-            disabled={sending}
-          >
-            <Paperclip className="w-4 h-4" />
-          </button>
+          {/* Only show attachment button for authenticated users */}
+          {userId && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                pendingFiles.length > 0
+                  ? "bg-orange-100 text-orange-600"
+                  : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
+              }`}
+              disabled={sending}
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
+          )}
           <input
             type="text"
             value={input}

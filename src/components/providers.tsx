@@ -30,9 +30,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   const syncUser = useCallback(async (privyUser: any, accessToken: string) => {
     if (!privyUser) return;
-    const phone = privyUser.phone?.number;
+    const phone = privyUser.phone?.number || null;
+    const email = privyUser.email?.address || null;
     const walletAddress = privyUser.wallet?.address;
-    if (!phone) return;
+    if (!phone && !email) return;
 
     try {
       const res = await fetch("/api/auth", {
@@ -43,6 +44,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         },
         body: JSON.stringify({
           phone,
+          email,
           wallet_address: walletAddress,
           name: user?.name,
         }),
@@ -61,7 +63,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID || ""}
       clientId={process.env.NEXT_PUBLIC_PRIVY_CLIENT_ID || undefined}
       config={{
-        loginMethods: ["sms"],
+        loginMethods: ["sms", "email"],
         appearance: {
           theme: "light",
           accentColor: "#f97316",
