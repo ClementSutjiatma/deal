@@ -6,7 +6,10 @@ import { CdpClient } from "@coinbase/cdp-sdk";
  * Claims testnet ETH or USDC via the CDP Faucet API.
  * Only works on Base Sepolia (testnet).
  *
- * Body: { address: string, token: "eth" | "usdc" }
+ * Body: { address: string, token: "eth" | "usdc", amount?: number }
+ *
+ * For USDC, the CDP faucet gives 1 USDC per claim (max 10/day).
+ * If `amount` is provided, we call the faucet that many times (capped at 10).
  */
 export async function POST(req: NextRequest) {
   // Only allow on testnet
@@ -18,9 +21,10 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { address, token } = body as {
+  const { address, token, amount } = body as {
     address?: string;
     token?: string;
+    amount?: number;
   };
 
   if (!address || !token) {
@@ -48,14 +52,23 @@ export async function POST(req: NextRequest) {
   try {
     const cdp = new CdpClient();
 
-    const result = await cdp.evm.requestFaucet({
-      address: address as `0x${string}`,
-      network: "base-sepolia",
-      token,
-    });
+    // Number of faucet claims needed (1 USDC per claim, max 10/day)
+    const claims = Math.min(Math.max(Math.ceil(amount || 1), 1), 10);
+
+    const txHashes: string[] = [];
+    for (let i = 0; i < claims; i++) {
+      const result = await cdp.evm.requestFaucet({
+        address: address as `0x${string}`,
+        network: "base-sepolia",
+        token,
+      });
+      txHashes.push(result.transactionHash);
+    }
 
     return NextResponse.json({
-      transactionHash: result.transactionHash,
+      transactionHash: txHashes[txHashes.length - 1],
+      claims,
+      txHashes,
     });
   } catch (err: unknown) {
     const message =
