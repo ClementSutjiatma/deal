@@ -58,7 +58,7 @@ export async function POST(
   const { id } = await params;
   const supabase = createServiceClient();
   const body = await request.json();
-  const { sender_id, content, role, media_urls, conversation_id } = body;
+  const { sender_id, content, role, media_urls, conversation_id, anonymous_id } = body;
 
   if (!content || !role) {
     return NextResponse.json({ error: "Missing content or role" }, { status: 400 });
@@ -79,7 +79,7 @@ export async function POST(
   let resolvedConversationId: string | null = conversation_id || null;
 
   if (!resolvedConversationId && role === "buyer" && sender_id) {
-    // Try to find existing conversation
+    // Authenticated buyer: look up or create by buyer_id
     const { data: existing } = await (supabase
       .from("conversations") as any)
       .select("id")
@@ -90,7 +90,6 @@ export async function POST(
     if (existing) {
       resolvedConversationId = existing.id;
     } else {
-      // Create new conversation
       const { data: created, error: createErr } = await (supabase
         .from("conversations") as any)
         .insert({ deal_id: id, buyer_id: sender_id })
@@ -98,12 +97,41 @@ export async function POST(
         .single() as { data: any; error: any };
 
       if (createErr && createErr.code === "23505") {
-        // Race condition: retry fetch
         const { data: retry } = await (supabase
           .from("conversations") as any)
           .select("id")
           .eq("deal_id", id)
           .eq("buyer_id", sender_id)
+          .single() as { data: any };
+        resolvedConversationId = retry?.id || null;
+      } else if (created) {
+        resolvedConversationId = created.id;
+      }
+    }
+  } else if (!resolvedConversationId && role === "buyer" && !sender_id && anonymous_id) {
+    // Anonymous buyer: look up or create by anonymous_id
+    const { data: existing } = await (supabase
+      .from("conversations") as any)
+      .select("id")
+      .eq("deal_id", id)
+      .eq("anonymous_id", anonymous_id)
+      .single() as { data: any };
+
+    if (existing) {
+      resolvedConversationId = existing.id;
+    } else {
+      const { data: created, error: createErr } = await (supabase
+        .from("conversations") as any)
+        .insert({ deal_id: id, anonymous_id: anonymous_id })
+        .select("id")
+        .single() as { data: any; error: any };
+
+      if (createErr && createErr.code === "23505") {
+        const { data: retry } = await (supabase
+          .from("conversations") as any)
+          .select("id")
+          .eq("deal_id", id)
+          .eq("anonymous_id", anonymous_id)
           .single() as { data: any };
         resolvedConversationId = retry?.id || null;
       } else if (created) {

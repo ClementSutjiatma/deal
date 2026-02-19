@@ -68,6 +68,7 @@ function buildDealChatPrompt(ctx: DealContext): string {
     chatModeRules = `Rules for this conversation:
 - You are chatting with a prospective buyer in their PRIVATE thread. The seller is NOT in this chat — you represent the seller.
 - This is a 1-on-1 conversation between you and this buyer. Other buyers have their own separate threads.
+- The buyer may be anonymous (not yet logged in). That's fine — answer their questions. They'll be prompted to log in when they want to deposit.
 - Greet the buyer warmly. Explain what's being sold using the deal details above.
 - Answer questions about the tickets, venue, seating, transfer method, etc.
 - You MAY negotiate the price. The list price is ${priceDisplay}. You can offer up to 20% off (minimum ${minPriceDisplay}) if the buyer negotiates or seems hesitant.

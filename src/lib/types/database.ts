@@ -17,6 +17,7 @@ export interface Database {
           name: string | null;
           wallet_address: string | null;
           privy_user_id: string | null;
+          privy_wallet_id: string | null;
           phone_verified_at: string | null;
           email_verified_at: string | null;
           created_at: string;
@@ -29,6 +30,7 @@ export interface Database {
           name?: string | null;
           wallet_address?: string | null;
           privy_user_id?: string | null;
+          privy_wallet_id?: string | null;
           phone_verified_at?: string | null;
           email_verified_at?: string | null;
           created_at?: string;
@@ -41,6 +43,7 @@ export interface Database {
           name?: string | null;
           wallet_address?: string | null;
           privy_user_id?: string | null;
+          privy_wallet_id?: string | null;
           phone_verified_at?: string | null;
           email_verified_at?: string | null;
           created_at?: string;
@@ -175,7 +178,8 @@ export interface Database {
         Row: {
           id: string;
           deal_id: string;
-          buyer_id: string;
+          buyer_id: string | null;
+          anonymous_id: string | null;
           status: string;
           negotiated_price_cents: number | null;
           last_message_preview: string | null;
@@ -187,7 +191,8 @@ export interface Database {
         Insert: {
           id?: string;
           deal_id: string;
-          buyer_id: string;
+          buyer_id?: string | null;
+          anonymous_id?: string | null;
           status?: string;
           negotiated_price_cents?: number | null;
           last_message_preview?: string | null;
@@ -199,7 +204,8 @@ export interface Database {
         Update: {
           id?: string;
           deal_id?: string;
-          buyer_id?: string;
+          buyer_id?: string | null;
+          anonymous_id?: string | null;
           status?: string;
           negotiated_price_cents?: number | null;
           last_message_preview?: string | null;

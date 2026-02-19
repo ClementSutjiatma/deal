@@ -11,6 +11,7 @@ import { ListingsDropdown } from "@/components/listings-dropdown";
 import { Copy, Check, ExternalLink, Lock, Clock, AlertTriangle, Loader2, Plus, Wallet } from "lucide-react";
 import { useEscrow, type EscrowStep } from "@/lib/hooks/useEscrow";
 import { useUsdcBalance } from "@/lib/hooks/useUsdcBalance";
+import { useAnonymousId, clearAnonymousId } from "@/lib/hooks/useAnonymousId";
 import { createClient } from "@/lib/supabase/client";
 import type { Deal, Conversation } from "@/lib/types/database";
 import type { DealStatus } from "@/lib/constants";
@@ -67,6 +68,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === "84532";
   const supabase = createClient();
 
+  // Anonymous buyer ID (generated per-deal, stored in localStorage)
+  const anonymousId = useAnonymousId(deal?.id);
+
   const fetchDeal = useCallback(async () => {
     try {
       const res = await fetch(`/api/deals/${shortCode}`);
@@ -114,11 +118,12 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       });
   }, [authenticated, walletAddress, signerAdded, addSigners]);
 
-  // Fetch/create buyer conversation when deal loads and user is a buyer
-  // For sellers on post-OPEN deals, fetch the claimed conversation to scope the chat
+  // Fetch/create buyer conversation when deal loads
+  // Handles: authenticated buyers, anonymous buyers, and sellers on post-OPEN deals
   useEffect(() => {
-    if (!deal || !user) return;
-    const isSeller = user.id === deal.seller_id;
+    if (!deal) return;
+
+    const isSeller = user?.id === deal.seller_id;
 
     if (isSeller) {
       // Seller: only need conversation scoping for post-OPEN deals with a buyer
@@ -142,22 +147,70 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       return;
     }
 
-    // Buyer: skip if deal is past OPEN and this user isn't the buyer
-    if (deal.status !== "OPEN" && user.id !== deal.buyer_id) return;
+    // Authenticated buyer
+    if (user) {
+      if (deal.status !== "OPEN" && user.id !== deal.buyer_id) return;
 
-    async function initConversation() {
-      const res = await fetch(`/api/deals/${deal!.id}/conversations?buyer_id=${user!.id}`);
-      if (res.ok) {
-        const conv: Conversation = await res.json();
-        setConversationId(conv.id);
-        setConversationStatus(conv.status);
-        if (conv.negotiated_price_cents) {
-          setNegotiatedPriceCents(conv.negotiated_price_cents);
+      async function initAuthenticatedConversation() {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations?buyer_id=${user!.id}`);
+        if (res.ok) {
+          const conv: Conversation = await res.json();
+          setConversationId(conv.id);
+          setConversationStatus(conv.status);
+          if (conv.negotiated_price_cents) {
+            setNegotiatedPriceCents(conv.negotiated_price_cents);
+          }
         }
       }
+      initAuthenticatedConversation();
+      return;
     }
-    initConversation();
-  }, [deal?.id, deal?.seller_id, deal?.status, deal?.buyer_id, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Anonymous buyer (not authenticated, deal is OPEN)
+    if (!authenticated && deal.status === "OPEN" && anonymousId) {
+      async function initAnonymousConversation() {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations?anonymous_id=${anonymousId}`);
+        if (res.ok) {
+          const conv: Conversation = await res.json();
+          setConversationId(conv.id);
+          setConversationStatus(conv.status);
+        }
+      }
+      initAnonymousConversation();
+    }
+  }, [deal?.id, deal?.seller_id, deal?.status, deal?.buyer_id, user?.id, authenticated, anonymousId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auth transition: claim anonymous conversation when user logs in
+  useEffect(() => {
+    if (!user || !anonymousId || !deal || !conversationId) return;
+    if (user.id === deal.seller_id) return; // seller doesn't claim
+
+    async function claimAnonymousConversation() {
+      try {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations/claim`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            anonymous_id: anonymousId,
+            buyer_id: user!.id,
+          }),
+        });
+        if (res.ok) {
+          const conv: Conversation = await res.json();
+          setConversationId(conv.id);
+          setConversationStatus(conv.status);
+          if (conv.negotiated_price_cents) {
+            setNegotiatedPriceCents(conv.negotiated_price_cents);
+          }
+          // Clear the anonymous ID from localStorage
+          clearAnonymousId(deal!.id);
+        }
+      } catch {
+        // Claim failed — not critical, user can still chat with new conversation
+      }
+    }
+    claimAnonymousConversation();
+  }, [user?.id, anonymousId, deal?.id, conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Subscribe to conversation status changes (for buyer — detect "closed")
   useEffect(() => {
@@ -206,7 +259,14 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
 
   const isSeller = user?.id === deal.seller_id;
   const isBuyer = user?.id === deal.buyer_id;
-  const userRole: "seller" | "buyer" | null = isSeller ? "seller" : isBuyer ? "buyer" : (authenticated ? "buyer" : null);
+  // Anonymous users get "buyer" role when deal is OPEN (can ask questions via chat)
+  const userRole: "seller" | "buyer" | null = isSeller
+    ? "seller"
+    : isBuyer
+      ? "buyer"
+      : (authenticated || deal.status === "OPEN")
+        ? "buyer"
+        : null;
   const effectivePrice = negotiatedPriceCents ?? deal.price_cents;
   const priceDisplay = `$${(effectivePrice / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
@@ -520,34 +580,25 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
               setSelectedBuyerName(name);
             }}
           />
-        ) : !authenticated ? (
-          /* Unauthenticated visitors: show login prompt, no messages */
-          <Chat
-            dealId={deal.id}
-            userId={null}
-            userRole={null}
-            chatMode={deal.chat_mode}
-            conversationId={null}
-            disabled={true}
-            onLogin={login}
-          />
         ) : (!isSeller && !conversationId) || (isSeller && deal.status !== "OPEN" && deal.buyer_id && !conversationId) ? (
-          /* Waiting for conversation to load */
+          /* Waiting for conversation to load (both anonymous and authenticated) */
           <div className="flex items-center justify-center h-full">
             <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
-          /* Authenticated users see Chat */
+          /* Both anonymous and authenticated users see Chat */
           <Chat
             dealId={deal.id}
             userId={user?.id || null}
             userRole={userRole}
             chatMode={deal.chat_mode}
             conversationId={conversationId}
+            anonymousId={!authenticated ? anonymousId : null}
             disabled={isTerminal || isConversationClosed || (!isSeller && !isBuyer && deal.status !== "OPEN")}
             placeholder={deal.status === "OPEN" && !isSeller ? "Ask a question about this deal..." : "Type a message..."}
             onDepositRequest={(cents) => setNegotiatedPriceCents(cents)}
             onDeposit={handleDeposit}
+            onLogin={!authenticated ? login : undefined}
             depositLoading={depositLoading}
           />
         )}

@@ -12,6 +12,7 @@ interface Props {
   userRole: "seller" | "buyer" | null;
   chatMode: string;
   conversationId?: string | null;
+  anonymousId?: string | null;
   disabled?: boolean;
   placeholder?: string;
   onDepositRequest?: (amountCents: number) => void;
@@ -37,6 +38,7 @@ export function Chat({
   userRole,
   chatMode,
   conversationId,
+  anonymousId,
   disabled,
   placeholder,
   onDepositRequest,
@@ -188,24 +190,27 @@ export function Chat({
     return urls;
   }
 
+  // Can send if: has a role AND (seller OR has conversationId for buyers)
+  const canSend = !!userRole && (userRole === "seller" || !!conversationId);
+
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
-    if ((!input.trim() && pendingFiles.length === 0) || !userRole || sending) return;
-    if (userRole === "buyer" && !conversationId) return;
+    if ((!input.trim() && pendingFiles.length === 0) || !canSend || sending) return;
 
     setSending(true);
     try {
-      // Upload images first
-      const mediaUrls = await uploadFiles();
+      // Upload images first (only for authenticated users — anonymous can't upload)
+      const mediaUrls = userId ? await uploadFiles() : [];
 
       const res = await fetch(`/api/deals/${dealId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sender_id: userId,
+          sender_id: userId || undefined,
           content: input.trim() || (mediaUrls.length > 0 ? "[image]" : ""),
           role: userRole,
           conversation_id: conversationId || undefined,
+          anonymous_id: anonymousId || undefined,
           media_urls: mediaUrls.length > 0 ? mediaUrls : undefined,
         }),
       });
@@ -302,20 +307,8 @@ export function Chat({
         </div>
       )}
 
-      {/* Login CTA for unauthenticated visitors */}
-      {!userRole && onLogin && (
-        <div className="border-t border-zinc-200 px-4 py-3">
-          <button
-            onClick={onLogin}
-            className="w-full h-10 rounded-2xl bg-zinc-900 text-white text-sm font-semibold hover:bg-zinc-700 transition-colors"
-          >
-            Log in to chat
-          </button>
-        </div>
-      )}
-
       {/* Input */}
-      {!disabled && userRole && (
+      {!disabled && canSend && (
         <form onSubmit={sendMessage} className="border-t border-zinc-200 px-4 py-3 flex gap-2">
           <input
             ref={fileInputRef}
@@ -325,18 +318,21 @@ export function Chat({
             className="hidden"
             onChange={handleFileSelect}
           />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-              pendingFiles.length > 0
-                ? "bg-orange-100 text-orange-600"
-                : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
-            }`}
-            disabled={sending}
-          >
-            <Paperclip className="w-4 h-4" />
-          </button>
+          {/* Only show attachment button for authenticated users */}
+          {userId && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                pendingFiles.length > 0
+                  ? "bg-orange-100 text-orange-600"
+                  : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
+              }`}
+              disabled={sending}
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
+          )}
           <input
             type="text"
             value={input}
