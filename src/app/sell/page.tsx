@@ -6,6 +6,7 @@ import { DefaultChatTransport } from "ai";
 import { Send, Copy, Check } from "lucide-react";
 import { AuthGate } from "@/components/auth-gate";
 import { NamePrompt } from "@/components/name-prompt";
+import { ListingsDropdown } from "@/components/listings-dropdown";
 import { useAppUser } from "@/components/providers";
 
 export default function SellPage() {
@@ -136,9 +137,12 @@ function SellChat() {
 
   return (
     <div className="flex flex-col h-screen max-w-lg mx-auto px-4">
-      {/* Name prompt at top */}
-      <div className="pt-3">
-        <NamePrompt />
+      {/* Top bar: name prompt + listings dropdown */}
+      <div className="pt-3 flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <NamePrompt />
+        </div>
+        {user && <ListingsDropdown sellerId={user.id} />}
       </div>
 
       {/* Centered layout: user message / input / agent message */}

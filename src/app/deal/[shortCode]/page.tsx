@@ -1,14 +1,18 @@
 "use client";
 
 import { useEffect, useState, useCallback, use } from "react";
-import { usePrivy, useWallets, useFundWallet } from "@privy-io/react-auth";
+import { usePrivy, useWallets, useFundWallet, useSigners } from "@privy-io/react-auth";
 import { useAppUser } from "@/components/providers";
 import { ProgressTracker } from "@/components/progress-tracker";
 import { Chat } from "@/components/chat";
+import { SellerDashboard } from "@/components/seller-dashboard";
+import { ConversationReadView } from "@/components/conversation-read-view";
+import { ListingsDropdown } from "@/components/listings-dropdown";
 import { Copy, Check, ExternalLink, Lock, Clock, AlertTriangle, Loader2, Plus, Wallet } from "lucide-react";
 import { useEscrow, type EscrowStep } from "@/lib/hooks/useEscrow";
 import { useUsdcBalance } from "@/lib/hooks/useUsdcBalance";
-import type { Deal } from "@/lib/types/database";
+import { createClient } from "@/lib/supabase/client";
+import type { Deal, Conversation } from "@/lib/types/database";
 import type { DealStatus } from "@/lib/constants";
 import { keccak256, toHex } from "viem";
 import { base } from "viem/chains";
@@ -30,17 +34,29 @@ function makeDealIdBytes32(dealUuid: string): `0x${string}` {
 
 export default function DealPage({ params }: { params: Promise<{ shortCode: string }> }) {
   const { shortCode } = use(params);
-  const { authenticated, login } = usePrivy();
-  const { user } = useAppUser();
+  const { authenticated, login, user: privyUser } = usePrivy();
+  const { user, syncUser } = useAppUser();
   const [deal, setDeal] = useState<(Deal & { seller: { id: string; name: string | null } }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Buyer conversation state
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationStatus, setConversationStatus] = useState<string | null>(null);
+  const [negotiatedPriceCents, setNegotiatedPriceCents] = useState<number | null>(null);
+
+  // Seller dashboard state
+  const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedBuyerName, setSelectedBuyerName] = useState<string>("");
+
   const escrow = useEscrow();
   const { wallets } = useWallets();
   const { fundWallet } = useFundWallet();
+  const { addSigners } = useSigners();
   const [fundingLoading, setFundingLoading] = useState(false);
+  const [depositLoading, setDepositLoading] = useState(false);
+  const [depositError, setDepositError] = useState<string | null>(null);
 
   // Get embedded wallet address for balance checking
   const embeddedWallet = wallets.find((w) => w.walletClientType === "privy");
@@ -49,6 +65,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const { balance: usdcBalance, formatted: usdcFormatted, refetch: refetchBalance } = useUsdcBalance(walletAddress);
 
   const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === "84532";
+  const supabase = createClient();
 
   const fetchDeal = useCallback(async () => {
     try {
@@ -72,6 +89,105 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     return () => clearInterval(interval);
   }, [fetchDeal]);
 
+  // Sync Privy user → app user (populates privy_wallet_id, wallet_address, etc.)
+  const [hasSynced, setHasSynced] = useState(false);
+  useEffect(() => {
+    if (authenticated && privyUser && !hasSynced && (!user || !user.privy_wallet_id)) {
+      syncUser(privyUser).then(() => setHasSynced(true));
+    }
+  }, [authenticated, privyUser, user, syncUser, hasSynced]);
+
+  // Register server authorization key as signer on embedded wallet (one-time per wallet)
+  const [signerAdded, setSignerAdded] = useState(false);
+  useEffect(() => {
+    if (!authenticated || !walletAddress || signerAdded) return;
+    const KEY_QUORUM_ID = "mtot90ao7hbycjalg7f269it";
+    addSigners({
+      address: walletAddress,
+      signers: [{ signerId: KEY_QUORUM_ID }],
+    })
+      .then(() => setSignerAdded(true))
+      .catch((err) => {
+        // Signer may already be added — that's fine
+        console.log("addSigners result:", err?.message || err);
+        setSignerAdded(true);
+      });
+  }, [authenticated, walletAddress, signerAdded, addSigners]);
+
+  // Fetch/create buyer conversation when deal loads and user is a buyer
+  // For sellers on post-OPEN deals, fetch the claimed conversation to scope the chat
+  useEffect(() => {
+    if (!deal || !user) return;
+    const isSeller = user.id === deal.seller_id;
+
+    if (isSeller) {
+      // Seller: only need conversation scoping for post-OPEN deals with a buyer
+      if (deal.status === "OPEN" || !deal.buyer_id) return;
+
+      async function fetchClaimedConversation() {
+        const res = await fetch(`/api/deals/${deal!.id}/conversations?seller_id=${user!.id}`);
+        if (res.ok) {
+          const convs: Conversation[] = await res.json();
+          const claimed = convs.find((c) => c.status === "claimed");
+          if (claimed) {
+            setConversationId(claimed.id);
+            setConversationStatus(claimed.status);
+            if (claimed.negotiated_price_cents) {
+              setNegotiatedPriceCents(claimed.negotiated_price_cents);
+            }
+          }
+        }
+      }
+      fetchClaimedConversation();
+      return;
+    }
+
+    // Buyer: skip if deal is past OPEN and this user isn't the buyer
+    if (deal.status !== "OPEN" && user.id !== deal.buyer_id) return;
+
+    async function initConversation() {
+      const res = await fetch(`/api/deals/${deal!.id}/conversations?buyer_id=${user!.id}`);
+      if (res.ok) {
+        const conv: Conversation = await res.json();
+        setConversationId(conv.id);
+        setConversationStatus(conv.status);
+        if (conv.negotiated_price_cents) {
+          setNegotiatedPriceCents(conv.negotiated_price_cents);
+        }
+      }
+    }
+    initConversation();
+  }, [deal?.id, deal?.seller_id, deal?.status, deal?.buyer_id, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Subscribe to conversation status changes (for buyer — detect "closed")
+  useEffect(() => {
+    if (!conversationId) return;
+
+    const channel = supabase
+      .channel(`conv-status:${conversationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "conversations",
+          filter: `id=eq.${conversationId}`,
+        },
+        (payload) => {
+          const updated = payload.new as Conversation;
+          setConversationStatus(updated.status);
+          if (updated.negotiated_price_cents) {
+            setNegotiatedPriceCents(updated.negotiated_price_cents);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [conversationId, supabase]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -91,62 +207,44 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const isSeller = user?.id === deal.seller_id;
   const isBuyer = user?.id === deal.buyer_id;
   const userRole: "seller" | "buyer" | null = isSeller ? "seller" : isBuyer ? "buyer" : (authenticated ? "buyer" : null);
-  const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
+  const effectivePrice = negotiatedPriceCents ?? deal.price_cents;
+  const priceDisplay = `$${(effectivePrice / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
   const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";
   const dealBytes32 = makeDealIdBytes32(deal.id);
+  const isConversationClosed = conversationStatus === "closed";
 
-  // ─── On-chain deposit flow ───────────────────────────────────
+  // ─── Server-side deposit flow ───────────────────────────────
   async function handleDeposit() {
     if (!authenticated) { login(); return; }
     if (!user) return;
 
+    setDepositLoading(true);
+    setDepositError(null);
+
     try {
-      // 1. Atomically claim the deal in DB first (prevents race conditions)
-      const claimRes = await fetch(`/api/deals/${deal!.id}/claim`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyer_id: user.id }),
-      });
-
-      if (!claimRes.ok) {
-        const data = await claimRes.json();
-        alert(data.error || "Failed to claim deal");
-        return;
-      }
-
-      // 2. Get deposit params from API
-      const depositRes = await fetch(`/api/deals/${deal!.id}/deposit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyer_id: user.id }),
-      });
-
-      if (!depositRes.ok) {
-        alert("Failed to get deposit parameters");
-        await rollbackClaim(deal!.id);
-        return;
-      }
-
-      const { deposit_params } = await depositRes.json();
-
-      // 3. Execute on-chain deposit (approve + deposit)
-      const txHash = await escrow.deposit(deposit_params);
-
-      // 4. Update tx hash in DB
-      await fetch(`/api/deals/${deal!.id}/claim`, {
+      const res = await fetch(`/api/deals/${deal!.id}/execute-deposit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           buyer_id: user.id,
-          escrow_tx_hash: txHash,
+          conversation_id: conversationId,
         }),
       });
 
+      const data = await res.json();
+
+      if (!res.ok) {
+        setDepositError(data.error || "Deposit failed");
+        return;
+      }
+
       fetchDeal();
-    } catch {
-      // On-chain tx failed — roll back the DB claim
-      await rollbackClaim(deal!.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Deposit failed";
+      setDepositError(message);
+    } finally {
+      setDepositLoading(false);
     }
   }
 
@@ -207,17 +305,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     }
   }
 
-  async function rollbackClaim(dealId: string) {
-    try {
-      await fetch(`/api/deals/${dealId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "OPEN", buyer_id: null }),
-      });
-    } catch {
-      // Rollback failed — cron job will handle cleanup
-    }
-  }
 
   // ─── Fund wallet flow ───────────────────────────────────────
   async function handleFundWallet() {
@@ -254,7 +341,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
           options: {
             chain: base,
             asset: "USDC",
-            amount: deal ? String(deal.price_cents / 100) : "10",
+            amount: deal ? String(effectivePrice / 100) : "10",
           },
         });
         // After modal closes, refresh balance
@@ -283,11 +370,26 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     return `${hours}h ${mins}m`;
   }
 
+  // ─── Render seller's conversation detail view ─────────────────
+  if (isSeller && deal.status === "OPEN" && selectedConvId) {
+    return (
+      <div className="flex flex-col h-screen max-w-lg mx-auto">
+        <ConversationReadView
+          dealId={deal.id}
+          conversationId={selectedConvId}
+          buyerName={selectedBuyerName}
+          onBack={() => { setSelectedConvId(null); setSelectedBuyerName(""); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen max-w-lg mx-auto">
       {/* Deal header */}
       <div className="px-4 py-4 border-b border-zinc-200 space-y-4">
-        <div>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
           <h1 className="text-lg font-bold">{deal.event_name}</h1>
           <p className="text-sm text-zinc-500">
             {[
@@ -302,6 +404,11 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             {deal.seats ? `, Seats ${deal.seats}` : ""}
             {deal.transfer_method ? ` · ${deal.transfer_method}` : ""}
           </p>
+          </div>
+          {/* Listings dropdown — top right */}
+          {isSeller && user && (
+            <ListingsDropdown sellerId={user.id} currentDealId={deal.id} />
+          )}
         </div>
 
         <ProgressTracker status={deal.status as DealStatus} />
@@ -366,12 +473,19 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         </div>
       )}
 
+      {/* Conversation closed banner */}
+      {isConversationClosed && deal.status !== "OPEN" && (
+        <div className="px-4 py-3 bg-zinc-50 border-b border-zinc-200">
+          <p className="text-sm text-zinc-500 text-center">This deal was claimed by another buyer.</p>
+        </div>
+      )}
+
       {/* On-chain transaction status banner */}
-      {escrow.isLoading && (
+      {(escrow.isLoading || depositLoading) && (
         <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center gap-2">
           <Loader2 className="w-4 h-4 animate-spin text-orange-500" />
           <span className="text-sm text-orange-700 font-medium">
-            {STEP_LABELS[escrow.step]}
+            {depositLoading ? "Processing deposit..." : STEP_LABELS[escrow.step]}
           </span>
         </div>
       )}
@@ -385,24 +499,66 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         </div>
       )}
 
-      {/* Chat */}
+      {depositError && (
+        <div className="px-4 py-3 bg-red-50 border-b border-red-200">
+          <p className="text-sm text-red-700">{depositError}</p>
+          <button onClick={() => setDepositError(null)} className="text-xs text-red-500 underline mt-1">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Chat / Dashboard area */}
       <div className="flex-1 overflow-hidden">
-        <Chat
-          dealId={deal.id}
-          userId={user?.id || null}
-          userRole={userRole}
-          chatMode={deal.chat_mode}
-          disabled={isTerminal || (!isSeller && !isBuyer && deal.status !== "OPEN")}
-          placeholder={deal.status === "OPEN" && !isSeller ? "Ask a question..." : "Type a message..."}
-        />
+        {/* Seller sees dashboard when deal is OPEN */}
+        {isSeller && deal.status === "OPEN" ? (
+          <SellerDashboard
+            dealId={deal.id}
+            sellerId={user!.id}
+            onSelectConversation={(convId, name) => {
+              setSelectedConvId(convId);
+              setSelectedBuyerName(name);
+            }}
+          />
+        ) : !authenticated ? (
+          /* Unauthenticated visitors: show login prompt, no messages */
+          <Chat
+            dealId={deal.id}
+            userId={null}
+            userRole={null}
+            chatMode={deal.chat_mode}
+            conversationId={null}
+            disabled={true}
+            onLogin={login}
+          />
+        ) : (!isSeller && !conversationId) || (isSeller && deal.status !== "OPEN" && deal.buyer_id && !conversationId) ? (
+          /* Waiting for conversation to load */
+          <div className="flex items-center justify-center h-full">
+            <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : (
+          /* Authenticated users see Chat */
+          <Chat
+            dealId={deal.id}
+            userId={user?.id || null}
+            userRole={userRole}
+            chatMode={deal.chat_mode}
+            conversationId={conversationId}
+            disabled={isTerminal || isConversationClosed || (!isSeller && !isBuyer && deal.status !== "OPEN")}
+            placeholder={deal.status === "OPEN" && !isSeller ? "Ask a question about this deal..." : "Type a message..."}
+            onDepositRequest={(cents) => setNegotiatedPriceCents(cents)}
+            onDeposit={handleDeposit}
+            depositLoading={depositLoading}
+          />
+        )}
       </div>
 
       {/* Action buttons */}
-      {!isTerminal && (
+      {!isTerminal && !isConversationClosed && (
         <div className="border-t border-zinc-200 px-4 py-3 space-y-2">
           {deal.status === "OPEN" && !isSeller && (() => {
             // USDC has 6 decimals; price_cents / 100 = dollars, * 1e6 = USDC units
-            const requiredAmount = BigInt(deal.price_cents) * BigInt(10000);
+            const requiredAmount = BigInt(effectivePrice) * BigInt(10000);
             const hasEnough = usdcBalance !== null && usdcBalance >= requiredAmount;
 
             return (
@@ -416,7 +572,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                     </span>
                     {!hasEnough && (
                       <span className="text-orange-500">
-                        Need {(deal.price_cents / 100).toFixed(2)} USDC
+                        Need {(effectivePrice / 100).toFixed(2)} USDC
                       </span>
                     )}
                   </div>
@@ -445,24 +601,26 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                   </button>
                 )}
 
-                {/* Deposit button */}
-                <button
-                  onClick={handleDeposit}
-                  disabled={escrow.isLoading || (authenticated && !hasEnough)}
-                  className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
-                >
-                  {escrow.isLoading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      {STEP_LABELS[escrow.step]}
-                    </>
-                  ) : (
-                    <>
-                      <Lock className="w-5 h-5" />
-                      Deposit {priceDisplay}
-                    </>
-                  )}
-                </button>
+                {/* Deposit button — only show if no AI deposit prompt yet, as a fallback */}
+                {!negotiatedPriceCents && (
+                  <button
+                    onClick={handleDeposit}
+                    disabled={depositLoading || (authenticated && !hasEnough)}
+                    className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
+                  >
+                    {depositLoading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Processing deposit...
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-5 h-5" />
+                        Deposit {priceDisplay}
+                      </>
+                    )}
+                  </button>
+                )}
               </>
             );
           })()}
