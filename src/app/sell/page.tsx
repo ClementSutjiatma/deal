@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Send, Copy, Check } from "lucide-react";
+import { MarkdownText } from "@/components/markdown-text";
 import { AuthGate } from "@/components/auth-gate";
 import { NamePrompt } from "@/components/name-prompt";
 import { useAppUser } from "@/components/providers";
@@ -147,7 +148,7 @@ function SellChat() {
         <div className="w-full min-h-[60px] flex items-end justify-end">
           {latestUserContent && (
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-orange-500 text-white transition-all duration-300">
-              <div className="whitespace-pre-wrap">{latestUserContent}</div>
+              <MarkdownText>{latestUserContent}</MarkdownText>
             </div>
           )}
         </div>
@@ -249,9 +250,9 @@ function SellChat() {
           ) : latestAssistantContent ? (
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700 transition-all duration-300">
               <div className="text-xs font-semibold mb-1 text-orange-600">
-                AI Agent
+                Dealbay
               </div>
-              <div className="whitespace-pre-wrap">{latestAssistantContent}</div>
+              <MarkdownText>{latestAssistantContent}</MarkdownText>
             </div>
           ) : null}
         </div>
