@@ -297,7 +297,14 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   // --- Server-side deposit flow ---
   async function handleDeposit() {
     if (!authenticated) { login(); return; }
-    if (!user) return;
+    if (!user) {
+      if (privyUser) {
+        const token = await getAccessToken();
+        if (token) await syncUser(privyUser, token);
+      }
+      setDepositError("Your account is still loading. Please try again in a moment.");
+      return;
+    }
 
     setDepositLoading(true);
     setDepositError(null);
@@ -462,7 +469,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   // --- Render seller's conversation detail view ---
   if (isSeller && deal.status === "OPEN" && selectedConvId) {
     return (
-      <div className="flex flex-col h-screen max-w-lg mx-auto">
+      <div className="flex flex-col h-screen max-w-lg mx-auto pt-14">
         <ConversationReadView
           dealId={deal.id}
           conversationId={selectedConvId}
@@ -476,7 +483,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   return (
     <div className="flex flex-col h-screen max-w-lg mx-auto">
       {/* Deal header */}
-      <div className="px-4 py-4 border-b border-zinc-200 space-y-4">
+      <div className="px-4 pt-14 pb-4 border-b border-zinc-200 space-y-4">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
           <h1 className="text-lg font-bold">{deal.event_name}</h1>

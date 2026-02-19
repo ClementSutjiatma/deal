@@ -12,7 +12,7 @@ export interface Database {
       users: {
         Row: {
           id: string;
-          phone: string;
+          phone: string | null;
           email: string | null;
           name: string | null;
           wallet_address: string | null;
@@ -25,7 +25,7 @@ export interface Database {
         };
         Insert: {
           id?: string;
-          phone: string;
+          phone?: string | null;
           email?: string | null;
           name?: string | null;
           wallet_address?: string | null;
@@ -38,7 +38,7 @@ export interface Database {
         };
         Update: {
           id?: string;
-          phone?: string;
+          phone?: string | null;
           email?: string | null;
           name?: string | null;
           wallet_address?: string | null;

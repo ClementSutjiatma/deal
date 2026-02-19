@@ -42,7 +42,7 @@ export function AuthGate({ children, fallback }: Props) {
             onClick={login}
             className="h-12 px-8 rounded-2xl bg-orange-500 text-white font-semibold hover:bg-orange-600 transition-colors"
           >
-            Sign in with phone
+            Sign in
           </button>
         </div>
       )
