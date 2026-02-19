@@ -5,6 +5,7 @@ import { usePrivy } from "@privy-io/react-auth";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
+import { MarkdownText } from "@/components/markdown-text";
 import type { Message } from "@/lib/types/database";
 
 interface Props {
@@ -266,9 +267,9 @@ export function Chat({
                   </div>
                 )}
                 {msg.role === "ai" && (
-                  <div className="text-xs font-semibold mb-1 text-orange-600">AI Agent</div>
+                  <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
                 )}
-                <div className="whitespace-pre-wrap">{displayContent}</div>
+                <MarkdownText>{displayContent}</MarkdownText>
                 {msg.media_urls && msg.media_urls.length > 0 && (
                   <div className="mt-2 space-y-1">
                     {msg.media_urls.map((url, i) => (

@@ -16,6 +16,7 @@ contract TicketEscrow is Ownable, ReentrancyGuard, Pausable {
         address buyer;
         address seller;
         uint256 amount;
+        uint256 platformFeeBps;
         uint256 depositedAt;
         uint256 transferredAt;
         uint256 disputedAt;
@@ -36,7 +37,7 @@ contract TicketEscrow is Ownable, ReentrancyGuard, Pausable {
 
     event DealFunded(bytes32 indexed dealId, address buyer, address seller, uint256 amount);
     event DealTransferred(bytes32 indexed dealId);
-    event DealReleased(bytes32 indexed dealId, uint256 amount);
+    event DealReleased(bytes32 indexed dealId, uint256 sellerAmount, uint256 platformFee);
     event DealRefunded(bytes32 indexed dealId, uint256 amount);
     event DealDisputed(bytes32 indexed dealId);
     event DisputeResolved(bytes32 indexed dealId, address winner, bool favoredBuyer);
@@ -80,6 +81,7 @@ contract TicketEscrow is Ownable, ReentrancyGuard, Pausable {
             buyer: msg.sender,
             seller: seller,
             amount: amount,
+            platformFeeBps: platformFeeBps,
             depositedAt: block.timestamp,
             transferredAt: 0,
             disputedAt: 0,
@@ -208,9 +210,16 @@ contract TicketEscrow is Ownable, ReentrancyGuard, Pausable {
     }
 
     function _releaseFunds(bytes32 dealId, Deal storage deal) internal {
-        deal.status = DealStatus.Released;
-        usdc.safeTransfer(deal.seller, deal.amount);
+        uint256 fee = (deal.amount * deal.platformFeeBps) / 10000;
+        uint256 sellerAmount = deal.amount - fee;
 
-        emit DealReleased(dealId, deal.amount);
+        deal.status = DealStatus.Released;
+
+        if (fee > 0) {
+            usdc.safeTransfer(platformFeeRecipient, fee);
+        }
+        usdc.safeTransfer(deal.seller, sellerAmount);
+
+        emit DealReleased(dealId, sellerAmount, fee);
     }
 }

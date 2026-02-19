@@ -242,6 +242,20 @@ export async function POST(
       conversation: conversation as any,
     });
 
+    // Handle PRICE_ACCEPTED command — update deal terms so frontend can show deposit button
+    if (aiResult.command?.startsWith("PRICE_ACCEPTED:")) {
+      const offerCents = parseInt(aiResult.command.split(":")[1], 10);
+      if (!isNaN(offerCents)) {
+        const existingTerms = (deal.terms as Record<string, unknown>) || {};
+        await (supabase
+          .from("deals") as any)
+          .update({
+            terms: { ...existingTerms, buyer_offer_accepted: true, buyer_offer_cents: offerCents },
+          })
+          .eq("id", id);
+      }
+    }
+
     // Insert AI message with same visibility and conversation_id
     const { data: aiMsg } = await (supabase
       .from("messages") as any)

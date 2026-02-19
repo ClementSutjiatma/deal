@@ -289,6 +289,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const effectivePrice = negotiatedPriceCents ?? deal.price_cents;
   const priceDisplay = `$${(effectivePrice / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
+  const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
   const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";
   const dealBytes32 = makeDealIdBytes32(deal.id);
   const isConversationClosed = conversationStatus === "closed";
@@ -552,12 +553,12 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         <div className="px-4 py-3 border-b border-zinc-200 bg-zinc-50">
           <p className="text-xs font-semibold text-zinc-500 mb-2">TERMS</p>
           <ul className="text-xs text-zinc-500 space-y-1">
-            <li>Seller transfers within 2 hours of deposit</li>
-            <li>4 hours to confirm receipt</li>
-            <li>Seller timeout &rarr; automatic refund</li>
-            <li>Disputes adjudicated by AI</li>
+            <li>• Seller transfers within 2 hours of deposit</li>
+            <li>• 4 hours to confirm receipt</li>
+            <li>• Seller timeout → automatic refund</li>
+            <li>• Disputes adjudicated by Dealbay</li>
           </ul>
-          <p className="text-xs text-zinc-400 mt-2">First to deposit claims tickets.</p>
+          <p className="text-xs text-zinc-400 mt-2">Chat with Dealbay to make an offer.</p>
         </div>
       )}
 
@@ -623,7 +624,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             conversationId={conversationId}
             anonymousId={!authenticated ? anonymousId : null}
             disabled={isTerminal || isConversationClosed || (!isSeller && !isBuyer && deal.status !== "OPEN")}
-            placeholder={deal.status === "OPEN" && !isSeller ? "Ask a question about this deal..." : "Type a message..."}
+            placeholder={deal.status === "OPEN" && !isSeller ? (buyerOfferAccepted ? "Ask a question..." : "Make an offer...") : "Type a message..."}
             onDepositRequest={(cents) => setNegotiatedPriceCents(cents)}
             onDeposit={handleDeposit}
             onLogin={!authenticated ? login : undefined}
@@ -635,7 +636,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       {/* Action buttons */}
       {!isTerminal && !isConversationClosed && (
         <div className="border-t border-zinc-200 px-4 py-3 space-y-2">
-          {deal.status === "OPEN" && !isSeller && (() => {
+          {deal.status === "OPEN" && !isSeller && buyerOfferAccepted && (() => {
             // USDC has 6 decimals; price_cents / 100 = dollars, * 1e6 = USDC units
             const requiredAmount = BigInt(effectivePrice) * BigInt(10000);
             const hasEnough = usdcBalance !== null && usdcBalance >= requiredAmount;
