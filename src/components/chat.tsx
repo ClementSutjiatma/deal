@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
@@ -46,6 +47,7 @@ export function Chat({
   onDeposit,
   onLogin,
 }: Props) {
+  const { getAccessToken } = usePrivy();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -62,10 +64,15 @@ export function Chat({
       if (userRole === "buyer" && !conversationId) return;
 
       const params = new URLSearchParams();
-      if (userId) params.set("user_id", userId);
       if (conversationId) params.set("conversation_id", conversationId);
 
-      const res = await fetch(`/api/deals/${dealId}/messages?${params}`);
+      const headers: Record<string, string> = {};
+      const token = await getAccessToken();
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
       if (res.ok) {
         const data = await res.json();
         setMessages(data);
@@ -81,7 +88,7 @@ export function Chat({
       }
     }
     fetchMessages();
-  }, [dealId, userId, conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dealId, userId, conversationId, getAccessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Subscribe to realtime
   useEffect(() => {
@@ -199,16 +206,20 @@ export function Chat({
 
     setSending(true);
     try {
-      // Upload images first (only for authenticated users — anonymous can't upload)
+      // Upload images first (only for authenticated users -- anonymous can't upload)
       const mediaUrls = userId ? await uploadFiles() : [];
+
+      const token = await getAccessToken();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
 
       const res = await fetch(`/api/deals/${dealId}/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
-          sender_id: userId || undefined,
           content: input.trim() || (mediaUrls.length > 0 ? "[image]" : ""),
-          role: userRole,
           conversation_id: conversationId || undefined,
           anonymous_id: anonymousId || undefined,
           media_urls: mediaUrls.length > 0 ? mediaUrls : undefined,

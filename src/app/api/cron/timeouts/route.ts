@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { triggerRefund, triggerAutoRelease } from "@/lib/escrow";
 import { notifyAutoRefund, notifyAutoRelease } from "@/lib/twilio";
@@ -6,7 +6,15 @@ import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, DEAL_EXP
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // Verify CRON_SECRET to prevent unauthorized access
+  const authHeader = request.headers.get("authorization");
+  const expectedSecret = process.env.CRON_SECRET;
+
+  if (!expectedSecret || authHeader !== `Bearer ${expectedSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const supabase = createServiceClient();
   const now = new Date();
   const results: string[] = [];

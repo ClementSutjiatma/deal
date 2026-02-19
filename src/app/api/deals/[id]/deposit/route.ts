@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
 import { getDepositParams } from "@/lib/escrow";
 import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, MAX_DISCOUNT_FRACTION } from "@/lib/constants";
 import type { Address } from "viem";
@@ -8,9 +9,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await authenticateRequest(request);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
   const supabase = createServiceClient();
-  const { buyer_id, conversation_id } = await request.json();
+  const { conversation_id } = await request.json();
 
   // Fetch deal
   const { data: deal } = await (supabase
@@ -24,7 +30,7 @@ export async function POST(
     return NextResponse.json({ error: "Deal not available" }, { status: 404 });
   }
 
-  if (deal.seller_id === buyer_id) {
+  if (deal.seller_id === auth.user.id) {
     return NextResponse.json({ error: "Seller cannot be buyer" }, { status: 400 });
   }
 

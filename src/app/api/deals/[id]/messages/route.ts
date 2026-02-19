@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
 import { getAIResponse } from "@/lib/ai/agent";
 import { CHAT_MODES } from "@/lib/constants";
 
@@ -9,7 +10,11 @@ export async function GET(
 ) {
   const { id } = await params;
   const supabase = createServiceClient();
-  const userId = request.nextUrl.searchParams.get("user_id");
+
+  // Optional auth — derive userId from token if present
+  const auth = await authenticateRequest(request);
+  const userId = auth?.user.id ?? null;
+
   const conversationId = request.nextUrl.searchParams.get("conversation_id");
 
   // Fetch deal to determine visibility
@@ -58,10 +63,14 @@ export async function POST(
   const { id } = await params;
   const supabase = createServiceClient();
   const body = await request.json();
-  const { sender_id, content, role, media_urls, conversation_id, anonymous_id } = body;
+  const { content, media_urls, conversation_id, anonymous_id } = body;
 
-  if (!content || !role) {
-    return NextResponse.json({ error: "Missing content or role" }, { status: 400 });
+  // Try to authenticate — anonymous buyers won't have a token
+  const auth = await authenticateRequest(request);
+  const senderId = auth?.user.id ?? null;
+
+  if (!content) {
+    return NextResponse.json({ error: "Missing content" }, { status: 400 });
   }
 
   // Fetch deal
@@ -75,16 +84,33 @@ export async function POST(
     return NextResponse.json({ error: "Deal not found" }, { status: 404 });
   }
 
+  // Determine role: authenticated users derive from deal, anonymous users are buyers
+  let role: "seller" | "buyer";
+  if (senderId) {
+    const isSeller = senderId === deal.seller_id;
+    const isBuyer = senderId === deal.buyer_id;
+    // Authenticated user who is neither seller nor existing buyer can still be a new buyer on OPEN deals
+    if (!isSeller && !isBuyer && deal.status !== "OPEN") {
+      return NextResponse.json({ error: "Not a party to this deal" }, { status: 403 });
+    }
+    role = isSeller ? "seller" : "buyer";
+  } else if (anonymous_id && deal.status === "OPEN") {
+    // Anonymous buyer on an OPEN deal — allowed
+    role = "buyer";
+  } else {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   // Resolve conversation_id: use provided, or look up/create for buyer
   let resolvedConversationId: string | null = conversation_id || null;
 
-  if (!resolvedConversationId && role === "buyer" && sender_id) {
+  if (!resolvedConversationId && role === "buyer" && senderId) {
     // Authenticated buyer: look up or create by buyer_id
     const { data: existing } = await (supabase
       .from("conversations") as any)
       .select("id")
       .eq("deal_id", id)
-      .eq("buyer_id", sender_id)
+      .eq("buyer_id", senderId)
       .single() as { data: any };
 
     if (existing) {
@@ -92,7 +118,7 @@ export async function POST(
     } else {
       const { data: created, error: createErr } = await (supabase
         .from("conversations") as any)
-        .insert({ deal_id: id, buyer_id: sender_id })
+        .insert({ deal_id: id, buyer_id: senderId })
         .select("id")
         .single() as { data: any; error: any };
 
@@ -101,14 +127,14 @@ export async function POST(
           .from("conversations") as any)
           .select("id")
           .eq("deal_id", id)
-          .eq("buyer_id", sender_id)
+          .eq("buyer_id", senderId)
           .single() as { data: any };
         resolvedConversationId = retry?.id || null;
       } else if (created) {
         resolvedConversationId = created.id;
       }
     }
-  } else if (!resolvedConversationId && role === "buyer" && !sender_id && anonymous_id) {
+  } else if (!resolvedConversationId && role === "buyer" && !senderId && anonymous_id) {
     // Anonymous buyer: look up or create by anonymous_id
     const { data: existing } = await (supabase
       .from("conversations") as any)
@@ -151,7 +177,7 @@ export async function POST(
     .from("messages") as any)
     .insert({
       deal_id: id,
-      sender_id: sender_id || null,
+      sender_id: senderId || null,
       conversation_id: resolvedConversationId,
       role,
       content,
@@ -172,12 +198,12 @@ export async function POST(
     .eq("id", deal.seller_id)
     .single() as { data: any };
 
-  // For buyer in open mode, use sender_id as the buyer context
+  // For buyer in open mode, use senderId as the buyer context
   let buyer = null;
   if (deal.buyer_id) {
     buyer = (await (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as { data: any }).data;
-  } else if (role === "buyer" && sender_id) {
-    buyer = (await (supabase.from("users") as any).select("*").eq("id", sender_id).single() as { data: any }).data;
+  } else if (role === "buyer" && senderId) {
+    buyer = (await (supabase.from("users") as any).select("*").eq("id", senderId).single() as { data: any }).data;
   }
 
   // Fetch conversation for AI context (negotiated price, etc.)

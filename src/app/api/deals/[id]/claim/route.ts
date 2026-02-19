@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
+import { verifyTxReceipt } from "@/lib/escrow";
 import { notifyDeposit } from "@/lib/twilio";
 import { CONVERSATION_STATUSES } from "@/lib/constants";
 
@@ -7,18 +9,29 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { id } = await params;
-  const supabase = createServiceClient();
-  const { buyer_id, escrow_tx_hash, conversation_id } = await request.json();
-
-  if (!buyer_id) {
-    return NextResponse.json({ error: "Missing buyer_id" }, { status: 400 });
+  const auth = await authenticateRequest(request);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Atomic claim
+  const { id } = await params;
+  const supabase = createServiceClient();
+  const { escrow_tx_hash, conversation_id } = await request.json();
+
+  if (!escrow_tx_hash) {
+    return NextResponse.json({ error: "Missing escrow_tx_hash" }, { status: 400 });
+  }
+
+  // Verify on-chain transaction
+  const txConfirmed = await verifyTxReceipt(escrow_tx_hash as `0x${string}`);
+  if (!txConfirmed) {
+    return NextResponse.json({ error: "Transaction not confirmed on-chain" }, { status: 400 });
+  }
+
+  // Atomic claim using authenticated user ID
   const { data: claimed, error } = await (supabase.rpc as any)("claim_deal", {
     p_deal_id: id,
-    p_buyer_id: buyer_id,
+    p_buyer_id: auth.user.id,
   });
 
   if (error) {
@@ -30,12 +43,10 @@ export async function POST(
   }
 
   // Update escrow tx hash
-  if (escrow_tx_hash) {
-    await (supabase
-      .from("deals") as any)
-      .update({ escrow_tx_hash })
-      .eq("id", id);
-  }
+  await (supabase
+    .from("deals") as any)
+    .update({ escrow_tx_hash })
+    .eq("id", id);
 
   // Update conversation statuses
   if (conversation_id) {
@@ -57,7 +68,7 @@ export async function POST(
   await (supabase.from("deal_events") as any).insert({
     deal_id: id,
     event_type: "funded",
-    actor_id: buyer_id,
+    actor_id: auth.user.id,
     metadata: { escrow_tx_hash, conversation_id },
   });
 
