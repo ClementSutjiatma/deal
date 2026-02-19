@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
-import { verifyTxReceipt } from "@/lib/escrow";
+import { sponsoredMarkTransferred } from "@/lib/escrow";
 import { notifyTransfer } from "@/lib/twilio";
 import { DEAL_STATUSES } from "@/lib/constants";
 
@@ -16,19 +16,8 @@ export async function POST(
 
   const { id } = await params;
   const supabase = createServiceClient();
-  const { transfer_tx_hash } = await request.json();
 
-  if (!transfer_tx_hash) {
-    return NextResponse.json({ error: "Missing transfer_tx_hash" }, { status: 400 });
-  }
-
-  // Verify on-chain transaction
-  const txConfirmed = await verifyTxReceipt(transfer_tx_hash as `0x${string}`);
-  if (!txConfirmed) {
-    return NextResponse.json({ error: "Transaction not confirmed on-chain" }, { status: 400 });
-  }
-
-  // Verify seller and deal status using authenticated user
+  // Verify seller and deal status
   const { data: deal } = await (supabase
     .from("deals") as any)
     .select("*")
@@ -39,6 +28,22 @@ export async function POST(
 
   if (!deal) {
     return NextResponse.json({ error: "Deal not found or not in FUNDED state" }, { status: 404 });
+  }
+
+  // Get seller's Privy wallet ID for server-side signing
+  const sellerWalletId = auth.user.privy_wallet_id;
+  if (!sellerWalletId) {
+    return NextResponse.json({ error: "Seller wallet not configured" }, { status: 400 });
+  }
+
+  // Execute markTransferred on-chain via server-side gas-sponsored tx
+  let transfer_tx_hash: string;
+  try {
+    transfer_tx_hash = await sponsoredMarkTransferred(sellerWalletId, id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "On-chain transaction failed";
+    console.error("sponsoredMarkTransferred failed:", message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 
   // Update deal
@@ -83,5 +88,5 @@ export async function POST(
     visibility: "all",
   });
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, tx_hash: transfer_tx_hash });
 }

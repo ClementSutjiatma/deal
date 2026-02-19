@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, use } from "react";
-import { usePrivy, useWallets, useFundWallet, useSigners } from "@privy-io/react-auth";
+import { usePrivy, useWallets, useFundWallet } from "@privy-io/react-auth";
 import { useAppUser } from "@/components/providers";
 import { ProgressTracker } from "@/components/progress-tracker";
 import { Chat } from "@/components/chat";
@@ -15,7 +15,6 @@ import { useAnonymousId, clearAnonymousId } from "@/lib/hooks/useAnonymousId";
 import { createClient } from "@/lib/supabase/client";
 import type { Deal, Conversation } from "@/lib/types/database";
 import type { DealStatus } from "@/lib/constants";
-import { keccak256, toHex } from "viem";
 import { base } from "viem/chains";
 
 const STEP_LABELS: Record<EscrowStep, string> = {
@@ -28,10 +27,6 @@ const STEP_LABELS: Record<EscrowStep, string> = {
   done: "Done!",
   error: "Transaction failed",
 };
-
-function makeDealIdBytes32(dealUuid: string): `0x${string}` {
-  return keccak256(toHex(dealUuid));
-}
 
 export default function DealPage({ params }: { params: Promise<{ shortCode: string }> }) {
   const { shortCode } = use(params);
@@ -54,7 +49,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const escrow = useEscrow();
   const { wallets } = useWallets();
   const { fundWallet } = useFundWallet();
-  const { addSigners } = useSigners();
   const [fundingLoading, setFundingLoading] = useState(false);
   const [depositLoading, setDepositLoading] = useState(false);
   const [depositError, setDepositError] = useState<string | null>(null);
@@ -119,23 +113,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       })();
     }
   }, [authenticated, privyUser, user, syncUser, hasSynced, getAccessToken]);
-
-  // Register server authorization key as signer on embedded wallet (one-time per wallet)
-  const [signerAdded, setSignerAdded] = useState(false);
-  useEffect(() => {
-    if (!authenticated || !walletAddress || signerAdded) return;
-    const KEY_QUORUM_ID = "mtot90ao7hbycjalg7f269it";
-    addSigners({
-      address: walletAddress,
-      signers: [{ signerId: KEY_QUORUM_ID }],
-    })
-      .then(() => setSignerAdded(true))
-      .catch((err) => {
-        // Signer may already be added -- that's fine
-        console.log("addSigners result:", err?.message || err);
-        setSignerAdded(true);
-      });
-  }, [authenticated, walletAddress, signerAdded, addSigners]);
 
   // Fetch/create buyer conversation when deal loads
   // Handles: authenticated buyers, anonymous buyers, and sellers on post-OPEN deals
@@ -290,8 +267,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const priceDisplay = `$${(effectivePrice / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
-  const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";
-  const dealBytes32 = makeDealIdBytes32(deal.id);
   const isConversationClosed = conversationStatus === "closed";
 
   // --- Server-side deposit flow ---
@@ -310,32 +285,14 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     setDepositError(null);
 
     try {
-      // 1. Get deposit params from API
-      const depositRes = await authFetch(`/api/deals/${deal!.id}/deposit`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/deposit`, {
         method: "POST",
         body: JSON.stringify({ conversation_id: conversationId }),
       });
 
-      if (!depositRes.ok) {
-        const data = await depositRes.json();
-        setDepositError(data.error || "Failed to get deposit parameters");
-        return;
-      }
-
-      const { deposit_params } = await depositRes.json();
-
-      // 2. Execute on-chain deposit (approve + deposit)
-      const txHash = await escrow.deposit(deposit_params);
-
-      // 3. Claim deal in DB with tx hash
-      const claimRes = await authFetch(`/api/deals/${deal!.id}/claim`, {
-        method: "POST",
-        body: JSON.stringify({ escrow_tx_hash: txHash, conversation_id: conversationId }),
-      });
-
-      if (!claimRes.ok) {
-        const data = await claimRes.json();
-        setDepositError(data.error || "Failed to claim deal");
+      if (!res.ok) {
+        const data = await res.json();
+        setDepositError(data.error || "Deposit failed");
         return;
       }
 
@@ -348,57 +305,66 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     }
   }
 
-  // --- On-chain transfer flow ---
+  // --- Server-side transfer flow (gas-sponsored) ---
   async function handleTransfer() {
     if (!user) return;
-
+    escrow.setLoading("transferring");
     try {
-      const txHash = await escrow.markTransferred(dealBytes32, escrowAddr);
-
-      await authFetch(`/api/deals/${deal!.id}/transfer`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/transfer`, {
         method: "POST",
-        body: JSON.stringify({ transfer_tx_hash: txHash }),
+        body: JSON.stringify({}),
       });
-
+      if (!res.ok) {
+        const data = await res.json();
+        escrow.setError(data.error || "Transfer failed");
+        return;
+      }
+      escrow.setDone();
       fetchDeal();
-    } catch {
-      // Error set in hook
+    } catch (err) {
+      escrow.setError(err instanceof Error ? err.message : "Transfer failed");
     }
   }
 
-  // --- On-chain confirm flow ---
+  // --- Server-side confirm flow (gas-sponsored) ---
   async function handleConfirm() {
     if (!user) return;
-
+    escrow.setLoading("confirming");
     try {
-      const txHash = await escrow.confirmReceipt(dealBytes32, escrowAddr);
-
-      await authFetch(`/api/deals/${deal!.id}/confirm`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/confirm`, {
         method: "POST",
-        body: JSON.stringify({ confirm_tx_hash: txHash }),
+        body: JSON.stringify({}),
       });
-
+      if (!res.ok) {
+        const data = await res.json();
+        escrow.setError(data.error || "Confirm failed");
+        return;
+      }
+      escrow.setDone();
       fetchDeal();
-    } catch {
-      // Error set in hook
+    } catch (err) {
+      escrow.setError(err instanceof Error ? err.message : "Confirm failed");
     }
   }
 
-  // --- On-chain dispute flow ---
+  // --- Server-side dispute flow (gas-sponsored) ---
   async function handleDispute() {
     if (!user) return;
-
+    escrow.setLoading("disputing");
     try {
-      const txHash = await escrow.openDispute(dealBytes32, escrowAddr);
-
-      await authFetch(`/api/deals/${deal!.id}/dispute`, {
+      const res = await authFetch(`/api/deals/${deal!.id}/dispute`, {
         method: "POST",
-        body: JSON.stringify({ dispute_tx_hash: txHash }),
+        body: JSON.stringify({}),
       });
-
+      if (!res.ok) {
+        const data = await res.json();
+        escrow.setError(data.error || "Dispute failed");
+        return;
+      }
+      escrow.setDone();
       fetchDeal();
-    } catch {
-      // Error set in hook
+    } catch (err) {
+      escrow.setError(err instanceof Error ? err.message : "Dispute failed");
     }
   }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
-import { verifyTxReceipt } from "@/lib/escrow";
+import { sponsoredDispute } from "@/lib/escrow";
 import { notifyDispute } from "@/lib/twilio";
 import { DEAL_STATUSES, CHAT_MODES } from "@/lib/constants";
 
@@ -16,17 +16,6 @@ export async function POST(
 
   const { id } = await params;
   const supabase = createServiceClient();
-  const { dispute_tx_hash } = await request.json();
-
-  if (!dispute_tx_hash) {
-    return NextResponse.json({ error: "Missing dispute_tx_hash" }, { status: 400 });
-  }
-
-  // Verify on-chain transaction
-  const txConfirmed = await verifyTxReceipt(dispute_tx_hash as `0x${string}`);
-  if (!txConfirmed) {
-    return NextResponse.json({ error: "Transaction not confirmed on-chain" }, { status: 400 });
-  }
 
   const { data: deal } = await (supabase
     .from("deals") as any)
@@ -38,6 +27,21 @@ export async function POST(
 
   if (!deal) {
     return NextResponse.json({ error: "Deal not found or not in TRANSFERRED state" }, { status: 404 });
+  }
+
+  const buyerWalletId = auth.user.privy_wallet_id;
+  if (!buyerWalletId) {
+    return NextResponse.json({ error: "Buyer wallet not configured" }, { status: 400 });
+  }
+
+  // Execute dispute on-chain via server-side gas-sponsored tx
+  let dispute_tx_hash: string;
+  try {
+    dispute_tx_hash = await sponsoredDispute(buyerWalletId, id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "On-chain transaction failed";
+    console.error("sponsoredDispute failed:", message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 
   // Update deal
@@ -89,5 +93,5 @@ export async function POST(
     }
   }
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, tx_hash: dispute_tx_hash });
 }
