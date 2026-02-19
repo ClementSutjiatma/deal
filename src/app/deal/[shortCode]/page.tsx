@@ -103,7 +103,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
 
   const isSeller = user?.id === deal.seller_id;
   const isBuyer = user?.id === deal.buyer_id;
-  const userRole: "seller" | "buyer" | null = isSeller ? "seller" : isBuyer ? "buyer" : (authenticated ? "buyer" : null);
+  const userRole: "seller" | "buyer" | null = isSeller ? "seller" : "buyer";
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
   const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";

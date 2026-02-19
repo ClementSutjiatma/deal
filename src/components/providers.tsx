@@ -4,6 +4,7 @@ import { PrivyProvider } from "@privy-io/react-auth";
 import { createContext, useContext, useState, useCallback } from "react";
 import { base, baseSepolia } from "viem/chains";
 import type { User } from "@/lib/types/database";
+import { UserMenu } from "./user-menu";
 
 const appChain =
   process.env.NEXT_PUBLIC_CHAIN_ID === "84532" ? baseSepolia : base;
@@ -76,6 +77,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     >
       <AppContext.Provider value={{ user, setUser, syncUser }}>
         {children}
+        <UserMenu />
       </AppContext.Provider>
     </PrivyProvider>
   );
