@@ -17,6 +17,7 @@ interface Props {
   onDepositRequest?: (amountCents: number) => void;
   depositLoading?: boolean;
   onDeposit?: () => void;
+  onLogin?: () => void;
 }
 
 /** Strip deposit_request tags from displayed message content */
@@ -41,6 +42,7 @@ export function Chat({
   onDepositRequest,
   depositLoading,
   onDeposit,
+  onLogin,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -54,6 +56,9 @@ export function Chat({
   // Fetch initial messages
   useEffect(() => {
     async function fetchMessages() {
+      // Buyers must have a conversationId before fetching
+      if (userRole === "buyer" && !conversationId) return;
+
       const params = new URLSearchParams();
       if (userId) params.set("user_id", userId);
       if (conversationId) params.set("conversation_id", conversationId);
@@ -78,6 +83,9 @@ export function Chat({
 
   // Subscribe to realtime
   useEffect(() => {
+    // Buyers must have a conversationId before subscribing
+    if (userRole === "buyer" && !conversationId) return;
+
     // Use conversation_id filter when available, otherwise fall back to deal_id
     const filterColumn = conversationId ? "conversation_id" : "deal_id";
     const filterValue = conversationId || dealId;
@@ -183,6 +191,7 @@ export function Chat({
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
     if ((!input.trim() && pendingFiles.length === 0) || !userRole || sending) return;
+    if (userRole === "buyer" && !conversationId) return;
 
     setSending(true);
     try {
@@ -290,6 +299,18 @@ export function Chat({
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Login CTA for unauthenticated visitors */}
+      {!userRole && onLogin && (
+        <div className="border-t border-zinc-200 px-4 py-3">
+          <button
+            onClick={onLogin}
+            className="w-full h-10 rounded-2xl bg-zinc-900 text-white text-sm font-semibold hover:bg-zinc-700 transition-colors"
+          >
+            Log in to chat
+          </button>
         </div>
       )}
 
