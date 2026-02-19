@@ -2,18 +2,25 @@
   "name": "deal",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "create-wallet": "tsx scripts/create-privy-wallet.ts",
+    "deploy-contract": "tsx scripts/deploy-contract.ts",
+    "claim-faucet": "tsx scripts/claim-faucet.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.77.0",
+    "@ai-sdk/anthropic": "^3.0.45",
+    "@ai-sdk/react": "^3.0.93",
+    "@coinbase/cdp-sdk": "^1.44.1",
     "@privy-io/react-auth": "^3.14.1",
     "@privy-io/server-auth": "^1.32.5",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.97.0",
+    "ai": "^6.0.91",
     "lucide-react": "^0.574.0",
     "nanoid": "^5.1.6",
     "next": "16.1.6",

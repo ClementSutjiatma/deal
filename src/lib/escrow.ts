@@ -7,115 +7,11 @@ import {
   parseUnits,
   type Address,
 } from "viem";
-import { base, baseSepolia } from "viem/chains";
-import { privateKeyToAccount } from "viem/accounts";
+import { PrivyClient } from "@privy-io/server-auth";
+import { createViemAccount } from "@privy-io/server-auth/viem";
 import { USDC_DECIMALS, PLATFORM_FEE_BPS } from "./constants";
-
-const ESCROW_ABI = [
-  {
-    inputs: [
-      { name: "dealId", type: "bytes32" },
-      { name: "seller", type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "feeBps", type: "uint256" },
-      { name: "transferDeadline", type: "uint256" },
-      { name: "confirmDeadline", type: "uint256" },
-    ],
-    name: "deposit",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "dealId", type: "bytes32" }],
-    name: "markTransferred",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "dealId", type: "bytes32" }],
-    name: "confirm",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "dealId", type: "bytes32" }],
-    name: "refund",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "dealId", type: "bytes32" }],
-    name: "autoRelease",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "dealId", type: "bytes32" }],
-    name: "dispute",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [
-      { name: "dealId", type: "bytes32" },
-      { name: "favorBuyer", type: "bool" },
-    ],
-    name: "resolveDispute",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "", type: "bytes32" }],
-    name: "deals",
-    outputs: [
-      { name: "buyer", type: "address" },
-      { name: "seller", type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "platformFeeBps", type: "uint256" },
-      { name: "depositedAt", type: "uint256" },
-      { name: "transferredAt", type: "uint256" },
-      { name: "transferDeadline", type: "uint256" },
-      { name: "confirmDeadline", type: "uint256" },
-      { name: "status", type: "uint8" },
-    ],
-    stateMutability: "view",
-    type: "function",
-  },
-] as const;
-
-const ERC20_ABI = [
-  {
-    inputs: [
-      { name: "spender", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    name: "approve",
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ name: "account", type: "address" }],
-    name: "balanceOf",
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
-] as const;
-
-const chain =
-  process.env.NEXT_PUBLIC_CHAIN_ID === "84532" ? baseSepolia : base;
-const escrowAddress = process.env
-  .NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS as Address;
-const usdcAddress = process.env
-  .NEXT_PUBLIC_USDC_CONTRACT_ADDRESS as Address;
+import { ESCROW_ABI, ERC20_ABI } from "./abis";
+import { chain, escrowAddress, usdcAddress, rpcUrl } from "./chain";
 
 export function dealIdToBytes32(dealUuid: string): `0x${string}` {
   return keccak256(toHex(dealUuid));
@@ -124,18 +20,47 @@ export function dealIdToBytes32(dealUuid: string): `0x${string}` {
 export function getPublicClient() {
   return createPublicClient({
     chain,
-    transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
+    transport: http(rpcUrl),
   });
 }
 
-export function getPlatformWalletClient() {
-  const account = privateKeyToAccount(
-    process.env.PLATFORM_WALLET_PRIVATE_KEY as `0x${string}`
-  );
+let privyClient: PrivyClient | null = null;
+
+function getPrivyClient(): PrivyClient {
+  if (!privyClient) {
+    const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+    const appSecret = process.env.PRIVY_APP_SECRET;
+    if (!appId || !appSecret) {
+      throw new Error(
+        "Missing NEXT_PUBLIC_PRIVY_APP_ID or PRIVY_APP_SECRET env vars"
+      );
+    }
+    privyClient = new PrivyClient(appId, appSecret);
+  }
+  return privyClient;
+}
+
+export async function getPlatformWalletClient() {
+  const walletId = process.env.PRIVY_WALLET_ID;
+  const walletAddress = process.env.PRIVY_WALLET_ADDRESS;
+
+  if (!walletId || !walletAddress) {
+    throw new Error(
+      "Missing PRIVY_WALLET_ID or PRIVY_WALLET_ADDRESS. Run: pnpm run create-wallet"
+    );
+  }
+
+  const account = await createViemAccount({
+    walletId,
+    address: walletAddress as `0x${string}`,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    privy: getPrivyClient() as any,
+  });
+
   return createWalletClient({
     account,
     chain,
-    transport: http(process.env.NEXT_PUBLIC_BASE_RPC_URL),
+    transport: http(rpcUrl),
   });
 }
 
@@ -143,7 +68,7 @@ export async function resolveDisputeOnChain(
   dealUuid: string,
   favorBuyer: boolean
 ): Promise<string> {
-  const walletClient = getPlatformWalletClient();
+  const walletClient = await getPlatformWalletClient();
   const dealId = dealIdToBytes32(dealUuid);
 
   const hash = await walletClient.writeContract({
@@ -157,7 +82,7 @@ export async function resolveDisputeOnChain(
 }
 
 export async function triggerRefund(dealUuid: string): Promise<string> {
-  const walletClient = getPlatformWalletClient();
+  const walletClient = await getPlatformWalletClient();
   const dealId = dealIdToBytes32(dealUuid);
 
   const hash = await walletClient.writeContract({
@@ -171,7 +96,7 @@ export async function triggerRefund(dealUuid: string): Promise<string> {
 }
 
 export async function triggerAutoRelease(dealUuid: string): Promise<string> {
-  const walletClient = getPlatformWalletClient();
+  const walletClient = await getPlatformWalletClient();
   const dealId = dealIdToBytes32(dealUuid);
 
   const hash = await walletClient.writeContract({

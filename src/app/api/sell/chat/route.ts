@@ -1,26 +1,50 @@
-import { NextRequest, NextResponse } from "next/server";
+import { streamDealCreation } from "@/lib/ai/agent";
 import { createServiceClient } from "@/lib/supabase/server";
-import { getDealCreationResponse } from "@/lib/ai/agent";
 import { nanoid } from "nanoid";
 import { SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT } from "@/lib/constants";
+import { convertToModelMessages, type UIMessage } from "ai";
 
-export async function POST(request: NextRequest) {
-  const { messages, seller_id } = await request.json();
+export async function POST(request: Request) {
+  // seller_id from custom header (DefaultChatTransport body merge is unreliable)
+  const seller_id = request.headers.get("x-seller-id");
 
-  if (!messages || !seller_id) {
-    return NextResponse.json({ error: "Missing messages or seller_id" }, { status: 400 });
+  const body = await request.json();
+
+  // AI SDK v6 DefaultChatTransport sends { messages: UIMessage[], id, trigger, ... }
+  const uiMessages: UIMessage[] = body.messages;
+
+  if (!uiMessages || !seller_id) {
+    return new Response(
+      JSON.stringify({ error: "Missing messages or seller_id" }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
   }
 
-  const aiMessages = messages.map((m: any) => ({
-    role: m.role === "user" ? "user" as const : "assistant" as const,
-    content: m.content,
+  // Convert UIMessages (with parts) to simple { role, content } format for our agent
+  const modelMessages = await convertToModelMessages(uiMessages);
+  const simpleMessages = modelMessages.map((m) => ({
+    role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+    content:
+      typeof m.content === "string"
+        ? m.content
+        : (m.content as Array<{ type: string; text?: string }>)
+            .filter((p) => p.type === "text")
+            .map((p) => p.text ?? "")
+            .join(""),
   }));
 
-  const { content, dealData } = await getDealCreationResponse(aiMessages);
+  const result = streamDealCreation(simpleMessages, async ({ text }) => {
+    // onFinish: create the deal if <deal_data> is present in the final text
+    const dealDataMatch = text.match(/<deal_data>([\s\S]*?)<\/deal_data>/);
+    if (!dealDataMatch) return;
 
-  let deal_link: string | null = null;
+    let dealData: Record<string, unknown>;
+    try {
+      dealData = JSON.parse(dealDataMatch[1]);
+    } catch {
+      return;
+    }
 
-  if (dealData) {
     const supabase = createServiceClient();
     const short_code = nanoid(8);
     const terms = {
@@ -32,30 +56,21 @@ export async function POST(request: NextRequest) {
       event_canceled: "full refund",
     };
 
-    const { data: deal, error } = await (supabase
-      .from("deals") as any)
-      .insert({
-        short_code,
-        seller_id,
-        event_name: dealData.event_name as string,
-        event_date: (dealData.event_date as string) || null,
-        venue: (dealData.venue as string) || null,
-        section: (dealData.section as string) || null,
-        row: (dealData.row as string) || null,
-        seats: (dealData.seats as string) || null,
-        num_tickets: dealData.num_tickets as number,
-        price_cents: dealData.price_cents as number,
-        transfer_method: (dealData.transfer_method as string) || null,
-        terms,
-      })
-      .select()
-      .single();
+    await (supabase.from("deals") as any).insert({
+      short_code,
+      seller_id,
+      event_name: dealData.event_name as string,
+      event_date: (dealData.event_date as string) || null,
+      venue: (dealData.venue as string) || null,
+      section: (dealData.section as string) || null,
+      row: (dealData.row as string) || null,
+      seats: (dealData.seats as string) || null,
+      num_tickets: dealData.num_tickets as number,
+      price_cents: dealData.price_cents as number,
+      transfer_method: (dealData.transfer_method as string) || null,
+      terms,
+    });
+  });
 
-    if (!error && deal) {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-      deal_link = `${appUrl}/deal/${short_code}`;
-    }
-  }
-
-  return NextResponse.json({ content, deal_link });
+  return result.toUIMessageStreamResponse();
 }

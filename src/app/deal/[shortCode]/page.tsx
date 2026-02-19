@@ -1,23 +1,54 @@
 "use client";
 
 import { useEffect, useState, useCallback, use } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { usePrivy, useWallets, useFundWallet } from "@privy-io/react-auth";
 import { useAppUser } from "@/components/providers";
 import { ProgressTracker } from "@/components/progress-tracker";
 import { Chat } from "@/components/chat";
-import { Copy, Share2, Check, ExternalLink, Lock, Clock, AlertTriangle } from "lucide-react";
+import { Copy, Check, ExternalLink, Lock, Clock, AlertTriangle, Loader2, Plus, Wallet } from "lucide-react";
+import { useEscrow, type EscrowStep } from "@/lib/hooks/useEscrow";
+import { useUsdcBalance } from "@/lib/hooks/useUsdcBalance";
 import type { Deal } from "@/lib/types/database";
 import type { DealStatus } from "@/lib/constants";
+import { keccak256, toHex } from "viem";
+import { base } from "viem/chains";
+
+const STEP_LABELS: Record<EscrowStep, string> = {
+  idle: "",
+  approving: "Approving USDC...",
+  depositing: "Depositing to escrow...",
+  confirming: "Confirming transaction...",
+  transferring: "Marking as transferred...",
+  disputing: "Filing dispute...",
+  done: "Done!",
+  error: "Transaction failed",
+};
+
+function makeDealIdBytes32(dealUuid: string): `0x${string}` {
+  return keccak256(toHex(dealUuid));
+}
 
 export default function DealPage({ params }: { params: Promise<{ shortCode: string }> }) {
   const { shortCode } = use(params);
-  const { ready, authenticated, login } = usePrivy();
+  const { authenticated, login } = usePrivy();
   const { user } = useAppUser();
   const [deal, setDeal] = useState<(Deal & { seller: { id: string; name: string | null } }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  const escrow = useEscrow();
+  const { wallets } = useWallets();
+  const { fundWallet } = useFundWallet();
+  const [fundingLoading, setFundingLoading] = useState(false);
+
+  // Get embedded wallet address for balance checking
+  const embeddedWallet = wallets.find((w) => w.walletClientType === "privy");
+  const walletAddress = embeddedWallet?.address || null;
+
+  const { balance: usdcBalance, formatted: usdcFormatted, refetch: refetchBalance } = useUsdcBalance(walletAddress);
+
+  const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === "84532";
 
   const fetchDeal = useCallback(async () => {
     try {
@@ -37,7 +68,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
 
   useEffect(() => {
     fetchDeal();
-    // Poll for updates every 10s
     const interval = setInterval(fetchDeal, 10000);
     return () => clearInterval(interval);
   }, [fetchDeal]);
@@ -63,72 +93,171 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const userRole: "seller" | "buyer" | null = isSeller ? "seller" : isBuyer ? "buyer" : (authenticated ? "buyer" : null);
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
+  const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";
+  const dealBytes32 = makeDealIdBytes32(deal.id);
 
+  // ─── On-chain deposit flow ───────────────────────────────────
   async function handleDeposit() {
     if (!authenticated) { login(); return; }
     if (!user) return;
-    setActionLoading(true);
+
     try {
-      // In production, this would trigger Coinbase Onramp → USDC → escrow deposit
-      // For now, directly claim the deal
-      const res = await fetch(`/api/deals/${deal!.id}/claim`, {
+      // 1. Atomically claim the deal in DB first (prevents race conditions)
+      const claimRes = await fetch(`/api/deals/${deal!.id}/claim`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ buyer_id: user.id }),
       });
-      if (res.ok) {
-        fetchDeal();
-      } else {
-        const data = await res.json();
-        alert(data.error || "Failed to deposit");
+
+      if (!claimRes.ok) {
+        const data = await claimRes.json();
+        alert(data.error || "Failed to claim deal");
+        return;
       }
-    } finally {
-      setActionLoading(false);
+
+      // 2. Get deposit params from API
+      const depositRes = await fetch(`/api/deals/${deal!.id}/deposit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ buyer_id: user.id }),
+      });
+
+      if (!depositRes.ok) {
+        alert("Failed to get deposit parameters");
+        await rollbackClaim(deal!.id);
+        return;
+      }
+
+      const { deposit_params } = await depositRes.json();
+
+      // 3. Execute on-chain deposit (approve + deposit)
+      const txHash = await escrow.deposit(deposit_params);
+
+      // 4. Update tx hash in DB
+      await fetch(`/api/deals/${deal!.id}/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          buyer_id: user.id,
+          escrow_tx_hash: txHash,
+        }),
+      });
+
+      fetchDeal();
+    } catch {
+      // On-chain tx failed — roll back the DB claim
+      await rollbackClaim(deal!.id);
     }
   }
 
+  // ─── On-chain transfer flow ──────────────────────────────────
   async function handleTransfer() {
     if (!user) return;
-    setActionLoading(true);
+
     try {
-      const res = await fetch(`/api/deals/${deal!.id}/transfer`, {
+      await escrow.markTransferred(dealBytes32, escrowAddr);
+
+      await fetch(`/api/deals/${deal!.id}/transfer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ seller_id: user.id }),
       });
-      if (res.ok) fetchDeal();
-    } finally {
-      setActionLoading(false);
+
+      fetchDeal();
+    } catch {
+      // Error set in hook
     }
   }
 
+  // ─── On-chain confirm flow ───────────────────────────────────
   async function handleConfirm() {
     if (!user) return;
-    setActionLoading(true);
+
     try {
-      const res = await fetch(`/api/deals/${deal!.id}/confirm`, {
+      await escrow.confirmReceipt(dealBytes32, escrowAddr);
+
+      await fetch(`/api/deals/${deal!.id}/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ buyer_id: user.id }),
       });
-      if (res.ok) fetchDeal();
-    } finally {
-      setActionLoading(false);
+
+      fetchDeal();
+    } catch {
+      // Error set in hook
     }
   }
 
+  // ─── On-chain dispute flow ───────────────────────────────────
   async function handleDispute() {
     if (!user) return;
-    setActionLoading(true);
+
     try {
-      const res = await fetch(`/api/deals/${deal!.id}/dispute`, {
+      await escrow.openDispute(dealBytes32, escrowAddr);
+
+      await fetch(`/api/deals/${deal!.id}/dispute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ buyer_id: user.id }),
       });
-      if (res.ok) fetchDeal();
+
+      fetchDeal();
+    } catch {
+      // Error set in hook
+    }
+  }
+
+  async function rollbackClaim(dealId: string) {
+    try {
+      await fetch(`/api/deals/${dealId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "OPEN", buyer_id: null }),
+      });
+    } catch {
+      // Rollback failed — cron job will handle cleanup
+    }
+  }
+
+  // ─── Fund wallet flow ───────────────────────────────────────
+  async function handleFundWallet() {
+    if (!authenticated) { login(); return; }
+    if (!walletAddress) return;
+
+    setFundingLoading(true);
+    try {
+      if (isTestnet) {
+        // Testnet: claim USDC from CDP faucet
+        const res = await fetch("/api/faucet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address: walletAddress, token: "usdc" }),
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          alert(data.error || "Failed to claim test USDC");
+          return;
+        }
+        // Wait a bit for the faucet tx to confirm, then refresh balance
+        await new Promise((r) => setTimeout(r, 5000));
+        refetchBalance();
+      } else {
+        // Mainnet: open Privy funding modal (Coinbase Onramp / Apple Pay)
+        await fundWallet({
+          address: walletAddress,
+          options: {
+            chain: base,
+            asset: "USDC",
+            amount: deal ? String(deal.price_cents / 100) : "10",
+          },
+        });
+        // After modal closes, refresh balance
+        refetchBalance();
+      }
+    } catch (err) {
+      console.error("Fund wallet error:", err);
     } finally {
-      setActionLoading(false);
+      setFundingLoading(false);
     }
   }
 
@@ -139,7 +268,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     setTimeout(() => setCopied(false), 2000);
   }
 
-  // Countdown helper
   function getTimeLeft(deadline: string, timeoutSeconds: number): string {
     const deadlineTime = new Date(deadline).getTime() + timeoutSeconds * 1000;
     const remaining = deadlineTime - Date.now();
@@ -172,13 +300,13 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
 
         <ProgressTracker status={deal.status as DealStatus} />
 
-        {/* Status info */}
+        {/* Seller share link */}
         {deal.status === "OPEN" && isSeller && (
           <div className="bg-zinc-50 rounded-xl p-3 space-y-2">
             <p className="text-sm text-zinc-600">Share your deal link:</p>
             <div className="flex gap-2">
               <div className="flex-1 bg-white rounded-lg px-3 py-2 text-xs font-mono text-zinc-500 truncate border border-zinc-200">
-                {window.location.origin}/deal/{deal.short_code}
+                {typeof window !== "undefined" && window.location.origin}/deal/{deal.short_code}
               </div>
               <button onClick={copyLink} className="w-9 h-9 rounded-lg bg-zinc-100 flex items-center justify-center text-zinc-500 hover:text-zinc-700">
                 {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
@@ -232,6 +360,25 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         </div>
       )}
 
+      {/* On-chain transaction status banner */}
+      {escrow.isLoading && (
+        <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-orange-500" />
+          <span className="text-sm text-orange-700 font-medium">
+            {STEP_LABELS[escrow.step]}
+          </span>
+        </div>
+      )}
+
+      {escrow.step === "error" && escrow.error && (
+        <div className="px-4 py-3 bg-red-50 border-b border-red-200">
+          <p className="text-sm text-red-700">{escrow.error}</p>
+          <button onClick={escrow.reset} className="text-xs text-red-500 underline mt-1">
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Chat */}
       <div className="flex-1 overflow-hidden">
         <Chat
@@ -247,47 +394,123 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       {/* Action buttons */}
       {!isTerminal && (
         <div className="border-t border-zinc-200 px-4 py-3 space-y-2">
-          {/* OPEN: buyer can deposit */}
-          {deal.status === "OPEN" && !isSeller && (
-            <button
-              onClick={handleDeposit}
-              disabled={actionLoading}
-              className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
-            >
-              <Lock className="w-5 h-5" />
-              Deposit {priceDisplay}
-            </button>
-          )}
+          {deal.status === "OPEN" && !isSeller && (() => {
+            // USDC has 6 decimals; price_cents / 100 = dollars, * 1e6 = USDC units
+            const requiredAmount = BigInt(deal.price_cents) * BigInt(10000);
+            const hasEnough = usdcBalance !== null && usdcBalance >= requiredAmount;
 
-          {/* FUNDED: seller can mark transferred */}
+            return (
+              <>
+                {/* Balance indicator */}
+                {authenticated && walletAddress && (
+                  <div className="flex items-center justify-between text-xs text-zinc-400 px-1">
+                    <span className="flex items-center gap-1">
+                      <Wallet className="w-3 h-3" />
+                      Balance: {usdcFormatted ?? "..."} USDC
+                    </span>
+                    {!hasEnough && (
+                      <span className="text-orange-500">
+                        Need {(deal.price_cents / 100).toFixed(2)} USDC
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Get USDC button (shown when balance is insufficient) */}
+                {authenticated && !hasEnough && (
+                  <button
+                    onClick={handleFundWallet}
+                    disabled={fundingLoading}
+                    className="w-full h-12 rounded-2xl bg-green-500 text-white font-semibold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors disabled:opacity-50"
+                  >
+                    {fundingLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        {isTestnet ? "Claiming test USDC..." : "Opening payment..."}
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        {isTestnet ? "Get test USDC" : "Get USDC"}
+                      </>
+                    )}
+                  </button>
+                )}
+
+                {/* Deposit button */}
+                <button
+                  onClick={handleDeposit}
+                  disabled={escrow.isLoading || (authenticated && !hasEnough)}
+                  className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
+                >
+                  {escrow.isLoading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      {STEP_LABELS[escrow.step]}
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-5 h-5" />
+                      Deposit {priceDisplay}
+                    </>
+                  )}
+                </button>
+              </>
+            );
+          })()}
+
           {deal.status === "FUNDED" && isSeller && (
             <button
               onClick={handleTransfer}
-              disabled={actionLoading}
+              disabled={escrow.isLoading}
               className="w-full h-14 rounded-2xl bg-blue-500 text-white font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors disabled:opacity-50"
             >
-              I've transferred the tickets
+              {escrow.isLoading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  {STEP_LABELS[escrow.step]}
+                </>
+              ) : (
+                "I've transferred the tickets"
+              )}
             </button>
           )}
 
-          {/* TRANSFERRED: buyer can confirm or dispute */}
           {deal.status === "TRANSFERRED" && isBuyer && (
             <>
               <button
                 onClick={handleConfirm}
-                disabled={actionLoading}
+                disabled={escrow.isLoading}
                 className="w-full h-12 rounded-2xl bg-green-500 text-white font-semibold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors disabled:opacity-50"
               >
-                <Check className="w-5 h-5" />
-                Got them — release funds
+                {escrow.isLoading && escrow.step === "confirming" ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Releasing funds...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-5 h-5" />
+                    Got them — release funds
+                  </>
+                )}
               </button>
               <button
                 onClick={handleDispute}
-                disabled={actionLoading}
+                disabled={escrow.isLoading}
                 className="w-full h-12 rounded-2xl bg-zinc-100 text-zinc-700 font-semibold flex items-center justify-center gap-2 hover:bg-zinc-200 transition-colors disabled:opacity-50"
               >
-                <AlertTriangle className="w-4 h-4" />
-                Something's wrong
+                {escrow.isLoading && escrow.step === "disputing" ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Filing dispute...
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="w-4 h-4" />
+                    Something&apos;s wrong
+                  </>
+                )}
               </button>
             </>
           )}

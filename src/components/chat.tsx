@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { Send, Paperclip } from "lucide-react";
+import { Send, Paperclip, X } from "lucide-react";
 import type { Message } from "@/lib/types/database";
 
 interface Props {
@@ -18,7 +18,10 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const supabase = createClient();
 
   // Fetch initial messages
@@ -73,24 +76,86 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Clean up previews on unmount
+  useEffect(() => {
+    return () => {
+      previews.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [previews]);
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    // Limit to 4 images at a time
+    const maxNew = Math.max(0, 4 - pendingFiles.length);
+    const newFiles = files.slice(0, maxNew);
+
+    setPendingFiles((prev) => [...prev, ...newFiles].slice(0, 4));
+    setPreviews((prev) => [
+      ...prev,
+      ...newFiles.map((f) => URL.createObjectURL(f)),
+    ].slice(0, 4));
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function removePendingFile(index: number) {
+    URL.revokeObjectURL(previews[index]);
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+    setPreviews((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function uploadFiles(): Promise<string[]> {
+    if (pendingFiles.length === 0) return [];
+
+    const urls: string[] = [];
+    for (const file of pendingFiles) {
+      const ext = file.name.split(".").pop() || "jpg";
+      const path = `${dealId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+      const { error } = await supabase.storage
+        .from("deal-evidence")
+        .upload(path, file, { contentType: file.type });
+
+      if (!error) {
+        const { data: urlData } = supabase.storage
+          .from("deal-evidence")
+          .getPublicUrl(path);
+        urls.push(urlData.publicUrl);
+      }
+    }
+    return urls;
+  }
+
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
-    if (!input.trim() || !userRole || sending) return;
+    if ((!input.trim() && pendingFiles.length === 0) || !userRole || sending) return;
 
     setSending(true);
     try {
+      // Upload images first
+      const mediaUrls = await uploadFiles();
+
       const res = await fetch(`/api/deals/${dealId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sender_id: userId,
-          content: input.trim(),
+          content: input.trim() || (mediaUrls.length > 0 ? "[image]" : ""),
           role: userRole,
+          media_urls: mediaUrls.length > 0 ? mediaUrls : undefined,
         }),
       });
 
       if (res.ok) {
         setInput("");
+        setPendingFiles([]);
+        previews.forEach((url) => URL.revokeObjectURL(url));
+        setPreviews([]);
       }
     } finally {
       setSending(false);
@@ -142,12 +207,47 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
         <div ref={bottomRef} />
       </div>
 
+      {/* Pending image previews */}
+      {previews.length > 0 && (
+        <div className="px-4 py-2 border-t border-zinc-100 flex gap-2 overflow-x-auto">
+          {previews.map((url, i) => (
+            <div key={i} className="relative flex-shrink-0">
+              <img
+                src={url}
+                alt="pending upload"
+                className="w-16 h-16 rounded-lg object-cover border border-zinc-200"
+              />
+              <button
+                onClick={() => removePendingFile(i)}
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-800 text-white flex items-center justify-center"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input */}
       {!disabled && userRole && (
         <form onSubmit={sendMessage} className="border-t border-zinc-200 px-4 py-3 flex gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+          />
           <button
             type="button"
-            className="w-10 h-10 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-400 hover:text-zinc-600 transition-colors"
+            onClick={() => fileInputRef.current?.click()}
+            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+              pendingFiles.length > 0
+                ? "bg-orange-100 text-orange-600"
+                : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
+            }`}
+            disabled={sending}
           >
             <Paperclip className="w-4 h-4" />
           </button>
@@ -161,7 +261,7 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
           />
           <button
             type="submit"
-            disabled={!input.trim() || sending}
+            disabled={(!input.trim() && pendingFiles.length === 0) || sending}
             className="w-10 h-10 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
           >
             <Send className="w-4 h-4" />
