@@ -1,21 +1,29 @@
 import { streamDealCreation } from "@/lib/ai/agent";
+import { authenticateRequest } from "@/lib/auth";
 import { createServiceClient } from "@/lib/supabase/server";
 import { nanoid } from "nanoid";
 import { SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT } from "@/lib/constants";
 import { convertToModelMessages, type UIMessage } from "ai";
+import { NextRequest } from "next/server";
 
-export async function POST(request: Request) {
-  // seller_id from custom header (DefaultChatTransport body merge is unreliable)
-  const seller_id = request.headers.get("x-seller-id");
+export async function POST(request: NextRequest) {
+  const auth = await authenticateRequest(request);
+  if (!auth) {
+    return new Response(
+      JSON.stringify({ error: "Unauthorized" }),
+      { status: 401, headers: { "Content-Type": "application/json" } }
+    );
+  }
 
+  const seller_id = auth.user.id;
   const body = await request.json();
 
   // AI SDK v6 DefaultChatTransport sends { messages: UIMessage[], id, trigger, ... }
   const uiMessages: UIMessage[] = body.messages;
 
-  if (!uiMessages || !seller_id) {
+  if (!uiMessages) {
     return new Response(
-      JSON.stringify({ error: "Missing messages or seller_id" }),
+      JSON.stringify({ error: "Missing messages" }),
       { status: 400, headers: { "Content-Type": "application/json" } }
     );
   }

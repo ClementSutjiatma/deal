@@ -2,8 +2,8 @@
  * Deploys the TicketEscrow contract to Base Sepolia (or Base mainnet)
  * using the Privy server wallet as the deployer.
  *
- * The Privy wallet becomes the Ownable owner (for resolveDispute).
- * There are no platform fees — Deal is completely free to use.
+ * The Privy wallet becomes the Ownable owner (for resolveDispute)
+ * and the platformFeeRecipient (for collecting fees).
  *
  * Usage:
  *   pnpm run deploy-contract
@@ -55,6 +55,7 @@ async function main() {
   console.log(`Deploying TicketEscrow to ${chain.name}...`);
   console.log(`  Chain ID:          ${chain.id}`);
   console.log(`  USDC address:      ${usdcAddress}`);
+  console.log(`  Fee recipient:     ${walletAddress}`);
   console.log(`  Deployer (owner):  ${walletAddress}`);
   console.log();
 
@@ -113,13 +114,22 @@ async function main() {
     process.exit(1);
   }
 
-  // Deploy (constructor takes only USDC address — no fees)
+  // Encode constructor arguments
+  const { encodeAbiParameters, parseAbiParameters } = await import("viem");
+  const constructorArgs = encodeAbiParameters(
+    parseAbiParameters("address, address, uint256"),
+    [usdcAddress as Hex, walletAddress as Hex, BigInt(250)]
+  );
+
+  // Deploy
   console.log("Deploying contract...");
+  const deployData = (artifact.bytecode +
+    constructorArgs.slice(2)) as Hex;
 
   const hash = await walletClient.deployContract({
     abi: artifact.abi,
     bytecode: artifact.bytecode as Hex,
-    args: [usdcAddress as Hex],
+    args: [usdcAddress as Hex, walletAddress as Hex, BigInt(250)],
   });
 
   console.log(`  Tx hash: ${hash}`);
