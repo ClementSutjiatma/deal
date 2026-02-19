@@ -1,8 +1,12 @@
 "use client";
 
 import { PrivyProvider } from "@privy-io/react-auth";
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { createContext, useContext, useState, useCallback } from "react";
+import { base, baseSepolia } from "viem/chains";
 import type { User } from "@/lib/types/database";
+
+const appChain =
+  process.env.NEXT_PUBLIC_CHAIN_ID === "84532" ? baseSepolia : base;
 
 interface AppContextType {
   user: User | null;
@@ -58,6 +62,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
           theme: "light",
           accentColor: "#f97316",
         },
+        defaultChain: appChain,
+        supportedChains: [appChain],
         embeddedWallets: {
           ethereum: {
             createOnLogin: "users-without-wallets",

@@ -1,9 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { anthropic } from "@ai-sdk/anthropic";
+import { generateText, streamText, type ModelMessage } from "ai";
 import type { Deal, Message, User } from "@/lib/types/database";
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
 
 interface DealContext {
   deal: Deal;
@@ -106,35 +103,94 @@ When you need to trigger a state change, output one of these commands at the END
 Keep responses concise. No more than 2-3 short paragraphs. Be friendly but professional.`;
 }
 
+// ─── Deal chat (non-streaming, same interface) ───────────────────────
+
 export async function getAIResponse(
   context: DealContext
 ): Promise<{ content: string; command: string | null }> {
   const systemPrompt = buildDealChatPrompt(context);
 
-  const messages: Anthropic.MessageParam[] = context.recentMessages
+  const messages = context.recentMessages
     .slice(-50)
-    .map((msg) => ({
-      role: (msg.role === "ai" ? "assistant" : "user") as "user" | "assistant",
-      content:
+    .map((msg) => {
+      const roleLabel = msg.role === "ai" ? undefined : msg.role;
+      const senderName =
+        msg.role === "seller"
+          ? context.seller.name
+          : msg.role === "buyer"
+            ? context.buyer?.name || "Buyer"
+            : undefined;
+
+      const textContent =
         msg.role === "ai"
           ? msg.content
-          : `[${msg.role}${msg.sender_id ? ` - ${msg.role === "seller" ? context.seller.name : context.buyer?.name || "Buyer"}` : ""}]: ${msg.content}`,
-    }));
+          : `[${roleLabel}${senderName ? ` - ${senderName}` : ""}]: ${msg.content}`;
+
+      // Include images if present
+      const hasImages = msg.media_urls && msg.media_urls.length > 0;
+
+      return {
+        role: (msg.role === "ai" ? "assistant" : "user") as
+          | "user"
+          | "assistant",
+        content: hasImages
+          ? [
+              { type: "text" as const, text: textContent },
+              ...msg.media_urls!.map((url) => ({
+                type: "image" as const,
+                image: new URL(url),
+              })),
+            ]
+          : textContent,
+      };
+    }) as ModelMessage[];
 
   // Merge consecutive same-role messages
-  const mergedMessages: Anthropic.MessageParam[] = [];
+  const mergedMessages: ModelMessage[] = [];
   for (const msg of messages) {
-    if (
-      mergedMessages.length > 0 &&
-      mergedMessages[mergedMessages.length - 1].role === msg.role
-    ) {
+    const last = mergedMessages[mergedMessages.length - 1];
+    if (last && last.role === msg.role) {
+      // Merge text content (keep it simple for merged messages)
+      const lastText =
+        typeof last.content === "string"
+          ? last.content
+          : last.content
+              .filter((p) => p.type === "text")
+              .map((p) => (p as { type: "text"; text: string }).text)
+              .join("\n");
+      const msgText =
+        typeof msg.content === "string"
+          ? msg.content
+          : (msg.content as Array<{ type: string; text?: string }>)
+              .filter((p) => p.type === "text")
+              .map((p) => p.text)
+              .join("\n");
+
+      // Collect all image parts
+      const lastImages =
+        typeof last.content === "string"
+          ? []
+          : (last.content as Array<{ type: string }>).filter(
+              (p) => p.type === "image"
+            );
+      const msgImages =
+        typeof msg.content === "string"
+          ? []
+          : (msg.content as Array<{ type: string }>).filter(
+              (p) => p.type === "image"
+            );
+      const allImages = [...lastImages, ...msgImages];
+
       mergedMessages[mergedMessages.length - 1] = {
-        ...mergedMessages[mergedMessages.length - 1],
+        role: last.role,
         content:
-          mergedMessages[mergedMessages.length - 1].content +
-          "\n" +
-          msg.content,
-      };
+          allImages.length > 0
+            ? [
+                { type: "text" as const, text: lastText + "\n" + msgText },
+                ...(allImages as Array<{ type: "image"; image: URL }>),
+              ]
+            : lastText + "\n" + msgText,
+      } as ModelMessage;
     } else {
       mergedMessages.push(msg);
     }
@@ -148,15 +204,14 @@ export async function getAIResponse(
     });
   }
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-5-20250929",
-    max_tokens: 1024,
+  const result = await generateText({
+    model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: mergedMessages,
+    maxOutputTokens: 1024,
   });
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
+  const text = result.text;
 
   // Extract command if present
   const commandMatch = text.match(/<command>(.*?)<\/command>/);
@@ -166,26 +221,61 @@ export async function getAIResponse(
   return { content, command };
 }
 
+// ─── Sell chat (streaming, returns streamText result) ────────────────
+
+export function streamDealCreation(
+  messages: Array<{ role: "user" | "assistant"; content: string }>,
+  onFinish?: (event: { text: string }) => void | Promise<void>
+) {
+  const systemPrompt = buildDealCreationPrompt();
+
+  // Ensure first message is from user
+  const apiMessages = (
+    messages.length > 0 && messages[0].role === "user"
+      ? messages
+      : [
+          { role: "user" as const, content: "Hi, I want to sell tickets." },
+          ...messages,
+        ]
+  ) as ModelMessage[];
+
+  return streamText({
+    model: anthropic("claude-sonnet-4-5-20250929"),
+    system: systemPrompt,
+    messages: apiMessages,
+    maxOutputTokens: 1024,
+    onFinish: onFinish
+      ? async (event) => {
+          await onFinish({ text: event.text });
+        }
+      : undefined,
+  });
+}
+
+// ─── Legacy non-streaming sell chat (keep for compatibility) ─────────
+
 export async function getDealCreationResponse(
   messages: Array<{ role: "user" | "assistant"; content: string }>
 ): Promise<{ content: string; dealData: Record<string, unknown> | null }> {
   const systemPrompt = buildDealCreationPrompt();
 
-  // Ensure first message is from user
-  const apiMessages =
+  const apiMessages = (
     messages.length > 0 && messages[0].role === "user"
       ? messages
-      : [{ role: "user" as const, content: "Hi, I want to sell tickets." }, ...messages];
+      : [
+          { role: "user" as const, content: "Hi, I want to sell tickets." },
+          ...messages,
+        ]
+  ) as ModelMessage[];
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-5-20250929",
-    max_tokens: 1024,
+  const result = await generateText({
+    model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: apiMessages,
+    maxOutputTokens: 1024,
   });
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
+  const text = result.text;
 
   // Extract deal data if present
   const dealDataMatch = text.match(/<deal_data>([\s\S]*?)<\/deal_data>/);
