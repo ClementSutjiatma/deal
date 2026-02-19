@@ -68,10 +68,10 @@ export function ListingsDropdown({ sellerId, currentDealId }: Props) {
       <button
         onClick={() => setOpen((v) => !v)}
         onMouseEnter={() => setOpen(true)}
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-100 hover:bg-zinc-200 transition-colors text-zinc-600 text-xs font-medium"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-100 hover:bg-zinc-200 transition-colors text-zinc-600 text-sm font-medium"
       >
-        <List className="w-3.5 h-3.5" />
-        {deals.length > 0 && <span>{deals.length}</span>}
+        <List className="w-4 h-4" />
+        <span>{deals.length > 0 ? `${deals.length} listing${deals.length !== 1 ? "s" : ""}` : "Listings"}</span>
       </button>
 
       {open && (

@@ -129,8 +129,10 @@ function SellChat() {
   return (
     <div className="flex flex-col h-screen max-w-lg mx-auto px-4">
       {/* Top bar: name prompt + listings dropdown */}
-      <div className="pt-3 flex items-center justify-between">
-        <NamePrompt />
+      <div className="pt-3 flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <NamePrompt />
+        </div>
         {user && <ListingsDropdown sellerId={user.id} />}
       </div>
 
