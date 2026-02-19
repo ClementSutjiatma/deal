@@ -166,6 +166,10 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   async function handleDeposit() {
     if (!authenticated) { login(); return; }
     if (!user) return;
+    if (!embeddedWallet) {
+      alert("Wallet not ready yet. Please wait a moment and try again.");
+      return;
+    }
 
     try {
       // 1. Atomically claim the deal in DB first (prevents race conditions)
@@ -217,9 +221,14 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       });
 
       fetchDeal();
-    } catch {
+    } catch (err) {
       // On-chain tx failed — roll back the DB claim
       await rollbackClaim(deal!.id);
+      // Error is already shown in the escrow error banner via escrow.step === "error"
+      // But if we never reached escrow (e.g. claim failed), surface it
+      if (escrow.step !== "error") {
+        console.error("Deposit error:", err);
+      }
     }
   }
 
