@@ -11,7 +11,10 @@ export function getPrivyClient(): PrivyClient {
         "Missing NEXT_PUBLIC_PRIVY_APP_ID or PRIVY_APP_SECRET env vars"
       );
     }
-    privyClient = new PrivyClient(appId, appSecret);
+    const authKey = process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY;
+    privyClient = new PrivyClient(appId, appSecret, {
+      walletApi: authKey ? { authorizationPrivateKey: authKey } : undefined,
+    });
   }
   return privyClient;
 }
