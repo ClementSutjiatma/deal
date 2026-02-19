@@ -10,14 +10,20 @@ interface Props {
 }
 
 export function AuthGate({ children, fallback }: Props) {
-  const { ready, authenticated, user: privyUser, login } = usePrivy();
+  const { ready, authenticated, user: privyUser, login, getAccessToken } = usePrivy();
   const { user, syncUser } = useAppUser();
 
   useEffect(() => {
-    if (authenticated && privyUser && !user) {
-      syncUser(privyUser);
+    async function doSync() {
+      if (authenticated && privyUser && !user) {
+        const token = await getAccessToken();
+        if (token) {
+          syncUser(privyUser, token);
+        }
+      }
     }
-  }, [authenticated, privyUser, user, syncUser]);
+    doSync();
+  }, [authenticated, privyUser, user, syncUser, getAccessToken]);
 
   if (!ready) {
     return (

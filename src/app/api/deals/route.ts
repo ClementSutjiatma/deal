@@ -1,15 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
 import { nanoid } from "nanoid";
 import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT } from "@/lib/constants";
 
 export async function POST(request: NextRequest) {
+  const auth = await authenticateRequest(request);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const supabase = createServiceClient();
   const body = await request.json();
 
-  const { seller_id, event_name, event_date, venue, section, row, seats, num_tickets, price_cents, transfer_method } = body;
+  const { event_name, event_date, venue, section, row, seats, num_tickets, price_cents, transfer_method } = body;
 
-  if (!seller_id || !event_name || !num_tickets || !price_cents) {
+  if (!event_name || !num_tickets || !price_cents) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
   }
 
@@ -27,7 +33,7 @@ export async function POST(request: NextRequest) {
     .from("deals") as any)
     .insert({
       short_code,
-      seller_id,
+      seller_id: auth.user.id,
       event_name,
       event_date: event_date || null,
       venue: venue || null,

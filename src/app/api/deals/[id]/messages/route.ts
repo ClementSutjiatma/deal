@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
 import { getAIResponse } from "@/lib/ai/agent";
 import { CHAT_MODES } from "@/lib/constants";
 
@@ -9,7 +10,10 @@ export async function GET(
 ) {
   const { id } = await params;
   const supabase = createServiceClient();
-  const userId = request.nextUrl.searchParams.get("user_id");
+
+  // Optional auth — derive userId from token if present
+  const auth = await authenticateRequest(request);
+  const userId = auth?.user.id ?? null;
 
   // Fetch deal to determine visibility
   const { data: deal } = await (supabase
@@ -49,13 +53,18 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await authenticateRequest(request);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
   const supabase = createServiceClient();
   const body = await request.json();
-  const { sender_id, content, role, media_urls } = body;
+  const { content, media_urls } = body;
 
-  if (!content || !role) {
-    return NextResponse.json({ error: "Missing content or role" }, { status: 400 });
+  if (!content) {
+    return NextResponse.json({ error: "Missing content" }, { status: 400 });
   }
 
   // Fetch deal
@@ -69,6 +78,14 @@ export async function POST(
     return NextResponse.json({ error: "Deal not found" }, { status: 404 });
   }
 
+  // Derive role from authenticated user
+  const isSeller = auth.user.id === deal.seller_id;
+  const isBuyer = auth.user.id === deal.buyer_id;
+  if (!isSeller && !isBuyer) {
+    return NextResponse.json({ error: "Not a party to this deal" }, { status: 403 });
+  }
+  const role = isSeller ? "seller" : "buyer";
+
   // Determine visibility based on chat mode
   let visibility = "all";
   if (deal.chat_mode === CHAT_MODES.DISPUTE) {
@@ -80,7 +97,7 @@ export async function POST(
     .from("messages") as any)
     .insert({
       deal_id: id,
-      sender_id: sender_id || null,
+      sender_id: auth.user.id,
       role,
       content,
       visibility,

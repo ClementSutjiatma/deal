@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
 import type { Message } from "@/lib/types/database";
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder }: Props) {
+  const { getAccessToken } = usePrivy();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -27,17 +29,20 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
   // Fetch initial messages
   useEffect(() => {
     async function fetchMessages() {
-      const params = new URLSearchParams();
-      if (userId) params.set("user_id", userId);
+      const headers: Record<string, string> = {};
+      const token = await getAccessToken();
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
 
-      const res = await fetch(`/api/deals/${dealId}/messages?${params}`);
+      const res = await fetch(`/api/deals/${dealId}/messages`, { headers });
       if (res.ok) {
         const data = await res.json();
         setMessages(data);
       }
     }
     fetchMessages();
-  }, [dealId, userId]);
+  }, [dealId, getAccessToken]);
 
   // Subscribe to realtime
   useEffect(() => {
@@ -140,13 +145,17 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
       // Upload images first
       const mediaUrls = await uploadFiles();
 
+      const token = await getAccessToken();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
       const res = await fetch(`/api/deals/${dealId}/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
-          sender_id: userId,
           content: input.trim() || (mediaUrls.length > 0 ? "[image]" : ""),
-          role: userRole,
           media_urls: mediaUrls.length > 0 ? mediaUrls : undefined,
         }),
       });

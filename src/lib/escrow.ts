@@ -4,12 +4,11 @@ import {
   http,
   keccak256,
   toHex,
-  parseUnits,
   type Address,
 } from "viem";
-import { PrivyClient } from "@privy-io/server-auth";
 import { createViemAccount } from "@privy-io/server-auth/viem";
-import { USDC_DECIMALS, PLATFORM_FEE_BPS } from "./constants";
+import { getPrivyClient } from "./privy";
+import { USDC_DECIMALS } from "./constants";
 import { ESCROW_ABI, ERC20_ABI } from "./abis";
 import { chain, escrowAddress, usdcAddress, rpcUrl } from "./chain";
 
@@ -22,22 +21,6 @@ export function getPublicClient() {
     chain,
     transport: http(rpcUrl),
   });
-}
-
-let privyClient: PrivyClient | null = null;
-
-function getPrivyClient(): PrivyClient {
-  if (!privyClient) {
-    const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
-    const appSecret = process.env.PRIVY_APP_SECRET;
-    if (!appId || !appSecret) {
-      throw new Error(
-        "Missing NEXT_PUBLIC_PRIVY_APP_ID or PRIVY_APP_SECRET env vars"
-      );
-    }
-    privyClient = new PrivyClient(appId, appSecret);
-  }
-  return privyClient;
 }
 
 export async function getPlatformWalletClient() {
@@ -123,6 +106,22 @@ export async function getDealOnChain(dealUuid: string) {
   return result;
 }
 
+/**
+ * Verify that a transaction was confirmed on-chain.
+ * Returns true if the tx receipt shows success, false otherwise.
+ */
+export async function verifyTxReceipt(
+  txHash: `0x${string}`
+): Promise<boolean> {
+  const publicClient = getPublicClient();
+  try {
+    const receipt = await publicClient.getTransactionReceipt({ hash: txHash });
+    return receipt.status === "success";
+  } catch {
+    return false;
+  }
+}
+
 export function getDepositParams(
   dealUuid: string,
   sellerAddress: Address,
@@ -135,8 +134,8 @@ export function getDepositParams(
     usdcAddress,
     dealId: dealIdToBytes32(dealUuid),
     seller: sellerAddress,
-    amount: parseUnits(String(priceCents / 100), USDC_DECIMALS),
-    feeBps: BigInt(PLATFORM_FEE_BPS),
+    // Integer arithmetic to avoid floating point precision issues (L-5)
+    amount: BigInt(priceCents) * BigInt(10 ** (USDC_DECIMALS - 2)),
     transferDeadline: BigInt(transferDeadlineSeconds),
     confirmDeadline: BigInt(confirmDeadlineSeconds),
     escrowAbi: ESCROW_ABI,

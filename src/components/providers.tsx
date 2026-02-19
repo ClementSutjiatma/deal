@@ -11,7 +11,7 @@ const appChain =
 interface AppContextType {
   user: User | null;
   setUser: (user: User | null) => void;
-  syncUser: (privyUser: any) => Promise<void>;
+  syncUser: (privyUser: any, accessToken: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType>({
@@ -27,7 +27,7 @@ export function useAppUser() {
 export function Providers({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
 
-  const syncUser = useCallback(async (privyUser: any) => {
+  const syncUser = useCallback(async (privyUser: any, accessToken: string) => {
     if (!privyUser) return;
     const phone = privyUser.phone?.number;
     const walletAddress = privyUser.wallet?.address;
@@ -36,9 +36,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/auth", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
         body: JSON.stringify({
-          privy_user_id: privyUser.id,
           phone,
           wallet_address: walletAddress,
           name: user?.name,
