@@ -157,7 +157,7 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
                 Get the best price
               </h3>
               <p className="text-sm text-zinc-400 mt-0.5">
-                Dealbay negotiates a price equal to or above your asking price, so you never sell for less.
+                Dealbay negotiates across multiple buyers to get you a price equal to or above your asking price.
               </p>
             </div>
           </div>
