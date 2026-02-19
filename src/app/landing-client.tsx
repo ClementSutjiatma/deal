@@ -94,8 +94,16 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
         </div>
       )}
 
+      {/* Logo */}
+      <div className="px-6 pt-6 pb-0 max-w-lg w-full mx-auto">
+        <a href="/" className="inline-flex items-center gap-1.5 text-lg font-bold text-zinc-900">
+          <span className="text-xl">🤝</span>
+          Dealbay
+        </a>
+      </div>
+
       {/* Hero + Input */}
-      <main className="flex-1 flex flex-col items-center px-6 pt-20 pb-12">
+      <main className="flex-1 flex flex-col items-center px-6 pt-12 pb-12">
         <div className="max-w-lg w-full space-y-4">
           {/* Title */}
           <h1 className="text-3xl font-bold tracking-tight text-zinc-900">
