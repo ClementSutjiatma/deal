@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Send, Copy, Check, X } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import { MarkdownText } from "@/components/markdown-text";
 import { AuthGate } from "@/components/auth-gate";
 import { NamePrompt } from "@/components/name-prompt";
@@ -64,6 +65,8 @@ function SellChat({ accessToken }: { accessToken: string }) {
   const [copied, setCopied] = useState(false);
   const [input, setInput] = useState("");
   const [toastDismissed, setToastDismissed] = useState(false);
+  const searchParams = useSearchParams();
+  const prefillSent = useRef(false);
 
   const greeting = user?.name
     ? `Hey ${user.name}! What are you selling? Just describe it like you would in a Facebook post.`
@@ -108,6 +111,15 @@ function SellChat({ accessToken }: { accessToken: string }) {
   });
 
   const isLoading = status === "streaming" || status === "submitted";
+
+  // Auto-send prefilled description from landing page ?q= param
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (q && !prefillSent.current && user) {
+      prefillSent.current = true;
+      sendMessage({ text: q });
+    }
+  }, [searchParams, user, sendMessage]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {

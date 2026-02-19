@@ -272,6 +272,8 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     <div className="flex flex-col h-screen max-w-lg mx-auto">
       {/* Deal header */}
       <div className="px-4 py-4 border-b border-zinc-200 space-y-4">
+        <ProgressTracker status={deal.status as DealStatus} />
+
         <div>
           <h1 className="text-lg font-bold">{deal.event_name}</h1>
           <p className="text-sm text-zinc-500">
@@ -288,8 +290,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             {deal.transfer_method ? ` · ${deal.transfer_method}` : ""}
           </p>
         </div>
-
-        <ProgressTracker status={deal.status as DealStatus} />
 
         {/* Seller share link */}
         {deal.status === "OPEN" && isSeller && (
