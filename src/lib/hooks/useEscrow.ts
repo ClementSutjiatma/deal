@@ -98,7 +98,7 @@ export function useEscrow() {
         });
         await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
-        // Step 2: Deposit to escrow
+        // Step 2: Deposit to escrow (no fees)
         setStep("depositing");
         const depositHash = await walletClient.writeContract({
           address: params.escrow_address as Hex,

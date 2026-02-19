@@ -106,6 +106,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const userRole: "seller" | "buyer" | null = isSeller ? "seller" : "buyer";
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
+  const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
   const escrowAddr = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ADDRESS || "";
   const dealBytes32 = makeDealIdBytes32(deal.id);
 
@@ -344,9 +345,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             <li>• Seller transfers within 2 hours of deposit</li>
             <li>• 4 hours to confirm receipt</li>
             <li>• Seller timeout → automatic refund</li>
-            <li>• Disputes adjudicated by AI</li>
+            <li>• Disputes adjudicated by Dealbay</li>
           </ul>
-          <p className="text-xs text-zinc-400 mt-2">First to deposit claims tickets.</p>
+          <p className="text-xs text-zinc-400 mt-2">Chat with Dealbay to make an offer.</p>
         </div>
       )}
 
@@ -377,14 +378,14 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
           userRole={userRole}
           chatMode={deal.chat_mode}
           disabled={isTerminal || (!isSeller && !isBuyer && deal.status !== "OPEN")}
-          placeholder={deal.status === "OPEN" && !isSeller ? "Ask a question..." : "Type a message..."}
+          placeholder={deal.status === "OPEN" && !isSeller ? (buyerOfferAccepted ? "Ask a question..." : "Make an offer...") : "Type a message..."}
         />
       </div>
 
       {/* Action buttons */}
       {!isTerminal && (
         <div className="border-t border-zinc-200 px-4 py-3 space-y-2">
-          {deal.status === "OPEN" && !isSeller && (() => {
+          {deal.status === "OPEN" && !isSeller && buyerOfferAccepted && (() => {
             // USDC has 6 decimals; price_cents / 100 = dollars, * 1e6 = USDC units
             const requiredAmount = BigInt(deal.price_cents) * BigInt(10000);
             const hasEnough = usdcBalance !== null && usdcBalance >= requiredAmount;

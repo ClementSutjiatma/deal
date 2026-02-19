@@ -118,7 +118,7 @@ async function main() {
   const { encodeAbiParameters, parseAbiParameters } = await import("viem");
   const constructorArgs = encodeAbiParameters(
     parseAbiParameters("address, address, uint256"),
-    [usdcAddress as Hex, walletAddress as Hex, 250n]
+    [usdcAddress as Hex, walletAddress as Hex, BigInt(250)]
   );
 
   // Deploy
@@ -129,7 +129,7 @@ async function main() {
   const hash = await walletClient.deployContract({
     abi: artifact.abi,
     bytecode: artifact.bytecode as Hex,
-    args: [usdcAddress as Hex, walletAddress as Hex, 250n],
+    args: [usdcAddress as Hex, walletAddress as Hex, BigInt(250)],
   });
 
   console.log(`  Tx hash: ${hash}`);

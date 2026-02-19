@@ -76,7 +76,6 @@ export const ESCROW_ABI = [
       { name: "buyer", type: "address" },
       { name: "seller", type: "address" },
       { name: "amount", type: "uint256" },
-      { name: "platformFeeBps", type: "uint256" },
       { name: "depositedAt", type: "uint256" },
       { name: "transferredAt", type: "uint256" },
       { name: "disputedAt", type: "uint256" },

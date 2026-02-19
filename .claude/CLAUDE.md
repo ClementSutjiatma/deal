@@ -23,14 +23,52 @@ cat -v .env.check  # look for \n at end of values
 ## Deployment
 
 - **Vercel project**: `clemsut-gmailcoms-projects/deal`
+- **Vercel project ID**: `prj_CnEGg2SuK7Z8AaGHP5haaA3HzQVn`
+- **Org ID**: `team_uW5Dx26mTJ0HBuugx4808fiO`
 - **Production URL**: `https://deal-bay.vercel.app`
 - **Hobby plan**: Cron jobs limited to once daily (`0 0 * * *`)
 - Always use `vercel --prod --force --yes` after changing env vars to ensure clean build
 
+### Worktree Deployment (CRITICAL)
+
+**Every worktree MUST deploy as a preview branch under the main `deal` project, NOT as its own separate Vercel project.**
+
+When working in a worktree (e.g., `.claude/worktrees/sweet-gates` on branch `claude/sweet-gates`):
+
+1. **Before first deploy, fix `.vercel/project.json`** — Worktrees must share the main project's Vercel config. Run:
+   ```bash
+   mkdir -p .vercel
+   echo '{"projectId":"prj_CnEGg2SuK7Z8AaGHP5haaA3HzQVn","orgId":"team_uW5Dx26mTJ0HBuugx4808fiO"}' > .vercel/project.json
+   ```
+
+2. **Copy `.env.local` from the main project** if it doesn't exist in the worktree:
+   ```bash
+   cp /Users/clementsutjiatma/Projects/deal/.env.local .env.local
+   ```
+
+3. **Push the branch to origin first** (Vercel needs the branch on the remote):
+   ```bash
+   git push origin claude/sweet-gates
+   ```
+
+4. **Deploy as a preview** (NOT `--prod`):
+   ```bash
+   vercel --yes
+   ```
+   This creates a preview deployment URL like `deal-git-claude-sweet-gates-....vercel.app`
+
+5. **Only deploy to production from `main` branch** after merging:
+   ```bash
+   cd /Users/clementsutjiatma/Projects/deal
+   vercel --prod --force --yes
+   ```
+
+**NEVER run `vercel --prod` from a worktree.** This deploys the branch code to the production URL, bypassing review.
+
 ## Key Infrastructure
 
 - **Chain**: Base Sepolia (testnet, chain ID 84532)
-- **Escrow contract**: `0x29e155ed24bb2cf34af5bbf553e407a2878dba7d`
+- **Escrow contract**: `0xb92fbf6625497fd3d0ada9cf73996e180b6d6016` (zero-fee, deployed 2026-02-19)
 - **USDC**: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - **Privy wallet**: `0x448B6EBdBc5B6D0fcC25B5Ad0d6f6b0E9A242D73` (ID: `z6pytacq5jhpezkytramtd6l`)
 - **Supabase project**: `ahnogtglijmujnfbkyww`

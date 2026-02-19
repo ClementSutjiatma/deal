@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
+import { MarkdownText } from "@/components/markdown-text";
 import type { Message } from "@/lib/types/database";
 
 interface Props {
@@ -195,9 +196,9 @@ export function Chat({ dealId, userId, userRole, chatMode, disabled, placeholder
                 </div>
               )}
               {msg.role === "ai" && (
-                <div className="text-xs font-semibold mb-1 text-orange-600">AI Agent</div>
+                <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
               )}
-              <div className="whitespace-pre-wrap">{msg.content}</div>
+              <MarkdownText>{msg.content}</MarkdownText>
               {msg.media_urls && msg.media_urls.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {msg.media_urls.map((url, i) => (

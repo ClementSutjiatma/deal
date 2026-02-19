@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Send, Copy, Check, X } from "lucide-react";
+import { MarkdownText } from "@/components/markdown-text";
 import { AuthGate } from "@/components/auth-gate";
 import { NamePrompt } from "@/components/name-prompt";
 import { useAppUser } from "@/components/providers";
@@ -168,7 +169,7 @@ function SellChat({ accessToken }: { accessToken: string }) {
         <div className="w-full min-h-[60px] flex items-end justify-end">
           {latestUserContent && (
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-orange-500 text-white transition-all duration-300">
-              <div className="whitespace-pre-wrap">{latestUserContent}</div>
+              <MarkdownText>{latestUserContent}</MarkdownText>
             </div>
           )}
         </div>
@@ -217,9 +218,9 @@ function SellChat({ accessToken }: { accessToken: string }) {
           ) : latestAssistantContent ? (
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700 transition-all duration-300">
               <div className="text-xs font-semibold mb-1 text-orange-600">
-                AI Agent
+                Dealbay
               </div>
-              <div className="whitespace-pre-wrap">{latestAssistantContent}</div>
+              <MarkdownText>{latestAssistantContent}</MarkdownText>
             </div>
           ) : null}
         </div>
@@ -229,7 +230,7 @@ function SellChat({ accessToken }: { accessToken: string }) {
       {dealLink && !toastDismissed && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 w-full max-w-sm bg-white border border-zinc-200 rounded-2xl p-4 shadow-xl z-50 animate-[slideInUp_0.3s_ease-out]">
           <div className="flex items-start justify-between mb-2">
-            <p className="text-sm font-semibold text-green-700">🎉 Your deal link is ready!</p>
+            <p className="text-sm font-semibold text-green-700">Your deal link is ready!</p>
             <button
               onClick={() => setToastDismissed(true)}
               className="text-zinc-400 hover:text-zinc-600 transition-colors ml-2 flex-shrink-0"

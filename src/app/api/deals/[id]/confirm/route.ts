@@ -29,7 +29,7 @@ export async function POST(
   }
 
   // Verify on-chain deal status is Released (enum value 3)
-  const onChainDeal = await getDealOnChain(id) as any[];
+  const onChainDeal = await getDealOnChain(id) as unknown as any[];
   // Deal struct: [buyer, seller, amount, platformFeeBps, depositedAt, transferredAt, disputedAt, transferDeadline, confirmDeadline, status]
   const onChainStatus = Number(onChainDeal[9]);
   if (onChainStatus !== 3) {
