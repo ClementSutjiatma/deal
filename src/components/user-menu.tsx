@@ -2,13 +2,14 @@
 
 import { useState, useRef, useEffect } from "react";
 import { usePrivy } from "@privy-io/react-auth";
-import { ChevronDown, LogOut } from "lucide-react";
+import { ChevronDown, LogOut, Copy, Check } from "lucide-react";
 import { useAppUser } from "./providers";
 
 export function UserMenu() {
   const { ready, authenticated, login, logout, user: privyUser } = usePrivy();
   const { user, setUser } = useAppUser();
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   // Close dropdown on click outside
@@ -63,6 +64,21 @@ export function UserMenu() {
             <div className="px-4 py-2 text-xs text-zinc-400 border-b border-zinc-100">
               {privyUser?.phone?.number || privyUser?.email?.address}
             </div>
+          )}
+          {user?.wallet_address && (
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(user.wallet_address!);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              className="w-full px-4 py-2 text-xs text-zinc-500 hover:bg-zinc-50 flex items-center gap-2 border-b border-zinc-100 transition-colors"
+            >
+              {copied ? <Check className="w-3 h-3 text-green-500 flex-shrink-0" /> : <Copy className="w-3 h-3 flex-shrink-0" />}
+              <span className="truncate font-mono">
+                {user.wallet_address.slice(0, 6)}...{user.wallet_address.slice(-4)}
+              </span>
+            </button>
           )}
           <button
             onClick={handleLogout}
