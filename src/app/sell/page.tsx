@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Send, Copy, Share2, Check } from "lucide-react";
@@ -47,7 +47,6 @@ function SellChat() {
   const [dealLink, setDealLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   const greeting = user?.name
     ? `Hey ${user.name}! What are you selling? Just describe it like you would in a Facebook post.`
@@ -88,11 +87,6 @@ function SellChat() {
 
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Auto-scroll on new messages
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
-
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
@@ -120,51 +114,60 @@ function SellChat() {
     }
   }, [dealLink, copyLink]);
 
-  return (
-    <div className="flex flex-col h-screen max-w-lg mx-auto">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-zinc-200">
-        <h1 className="text-lg font-semibold">Sell your tickets</h1>
-      </div>
+  // Find the latest user and assistant messages
+  const latestUserMsg = [...messages].reverse().find((m) => m.role === "user");
+  const latestAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
 
-      {/* Name prompt */}
-      <div className="px-4 pt-3">
+  const latestUserContent = latestUserMsg
+    ? cleanContent(getMessageText(latestUserMsg.parts as Array<{ type: string; text?: string }>))
+    : null;
+  const latestAssistantContent = latestAssistantMsg
+    ? cleanContent(getMessageText(latestAssistantMsg.parts as Array<{ type: string; text?: string }>))
+    : null;
+
+  return (
+    <div className="flex flex-col h-screen max-w-lg mx-auto px-4">
+      {/* Name prompt at top */}
+      <div className="pt-3">
         <NamePrompt />
       </div>
 
-      {/* Chat messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.map((msg) => {
-          const rawText = getMessageText(msg.parts as Array<{ type: string; text?: string }>);
-          const content = cleanContent(rawText);
-          if (!content) return null;
-
-          return (
-            <div
-              key={msg.id}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
-                  msg.role === "user"
-                    ? "bg-orange-500 text-white"
-                    : "bg-zinc-100 text-zinc-700"
-                }`}
-              >
-                {msg.role === "assistant" && (
-                  <div className="text-xs font-semibold mb-1 text-orange-600">
-                    AI Agent
-                  </div>
-                )}
-                <div className="whitespace-pre-wrap">{content}</div>
-              </div>
+      {/* Centered layout: user message / input / agent message */}
+      <div className="flex-1 flex flex-col items-center justify-center gap-4">
+        {/* Latest user message (above input) */}
+        <div className="w-full min-h-[60px] flex items-end justify-end">
+          {latestUserContent && (
+            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-orange-500 text-white transition-all duration-300">
+              <div className="whitespace-pre-wrap">{latestUserContent}</div>
             </div>
-          );
-        })}
+          )}
+        </div>
 
-        {/* Deal link card */}
-        {dealLink && (
-          <div className="bg-green-50 border border-green-200 rounded-2xl p-4 space-y-3">
+        {/* Input (center) */}
+        {!dealLink ? (
+          <form
+            onSubmit={handleSubmit}
+            className="w-full flex gap-2"
+          >
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Describe your tickets..."
+              className="flex-1 h-12 px-5 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-orange-500/50 transition-shadow"
+              disabled={isLoading}
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || isLoading}
+              className="w-12 h-12 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+        ) : (
+          /* Deal link card (replaces input when deal is created) */
+          <div className="w-full bg-green-50 border border-green-200 rounded-2xl p-4 space-y-3">
             <p className="text-sm font-medium text-green-800">
               Your deal link is ready!
             </p>
@@ -193,9 +196,9 @@ function SellChat() {
           </div>
         )}
 
-        {/* Loading indicator */}
-        {isLoading && messages[messages.length - 1]?.role === "user" && (
-          <div className="flex justify-start">
+        {/* Latest agent message (below input) */}
+        <div className="w-full min-h-[60px] flex items-start justify-start">
+          {isLoading && (!latestAssistantContent || messages[messages.length - 1]?.role === "user") ? (
             <div className="bg-zinc-100 rounded-2xl px-4 py-2 text-sm text-zinc-400">
               <div className="flex gap-1">
                 <div
@@ -212,35 +215,16 @@ function SellChat() {
                 />
               </div>
             </div>
-          </div>
-        )}
-
-        <div ref={bottomRef} />
+          ) : latestAssistantContent ? (
+            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700 transition-all duration-300">
+              <div className="text-xs font-semibold mb-1 text-orange-600">
+                AI Agent
+              </div>
+              <div className="whitespace-pre-wrap">{latestAssistantContent}</div>
+            </div>
+          ) : null}
+        </div>
       </div>
-
-      {/* Input */}
-      {!dealLink && (
-        <form
-          onSubmit={handleSubmit}
-          className="border-t border-zinc-200 px-4 py-3 flex gap-2"
-        >
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Describe your tickets..."
-            className="flex-1 h-10 px-4 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-orange-500/50"
-            disabled={isLoading}
-          />
-          <button
-            type="submit"
-            disabled={!input.trim() || isLoading}
-            className="w-10 h-10 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
-          >
-            <Send className="w-4 h-4" />
-          </button>
-        </form>
-      )}
     </div>
   );
 }
