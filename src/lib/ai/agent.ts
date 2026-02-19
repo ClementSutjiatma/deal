@@ -1,6 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateText, streamText, type ModelMessage } from "ai";
-import type { Deal, Message, User } from "@/lib/types/database";
+import type { Deal, Message, User, Conversation } from "@/lib/types/database";
 
 interface DealContext {
   deal: Deal;
@@ -8,6 +8,7 @@ interface DealContext {
   buyer: User | null;
   recentMessages: Message[];
   senderRole: string;
+  conversation?: Conversation | null;
 }
 
 function buildDealCreationPrompt(): string {
@@ -56,8 +57,36 @@ Only include the <deal_data> block when ALL fields are confirmed. The system wil
 }
 
 function buildDealChatPrompt(ctx: DealContext): string {
-  const { deal, seller, buyer } = ctx;
+  const { deal, seller, buyer, conversation } = ctx;
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
+  const minPrice = Math.round(deal.price_cents * 0.8);
+  const minPriceDisplay = `$${(minPrice / 100).toFixed(2)}`;
+
+  let chatModeRules: string;
+
+  if (deal.chat_mode === "open") {
+    chatModeRules = `Rules for this conversation:
+- You are chatting with a prospective buyer in their PRIVATE thread. The seller is NOT in this chat — you represent the seller.
+- This is a 1-on-1 conversation between you and this buyer. Other buyers have their own separate threads.
+- Greet the buyer warmly. Explain what's being sold using the deal details above.
+- Answer questions about the tickets, venue, seating, transfer method, etc.
+- You MAY negotiate the price. The list price is ${priceDisplay}. You can offer up to 20% off (minimum ${minPriceDisplay}) if the buyer negotiates or seems hesitant.
+- When the buyer is ready to buy (or you've agreed on a price), prompt them to deposit by outputting EXACTLY this tag at the end of your message:
+  <deposit_request amount_cents="XXXXX" />
+  where XXXXX is the agreed deposit amount in cents.
+- The UI will render a deposit button with this amount for the buyer.
+- Only output <deposit_request> ONCE per message, and ONLY when the buyer has expressed clear interest in buying.
+- If the buyer hasn't shown interest yet, DON'T prompt for deposit — keep answering questions.
+- Do NOT mention the deposit_request tag to the buyer. Just naturally say something like "Ready to lock these in?" and the system handles the rest.`;
+  } else if (deal.chat_mode === "active") {
+    chatModeRules = `Rules for this conversation:
+- The deal is locked. Only the buyer and seller are in this chat.
+- Guide the transfer process. Be helpful and keep things moving.
+- Remind the seller of the 2-hour transfer deadline if needed.`;
+  } else {
+    chatModeRules = `Rules for this conversation:
+- You're collecting evidence privately from each side. Ask structured questions. Request screenshots. Be impartial.`;
+  }
 
   return `You are an escrow agent for a peer-to-peer ticket sale. You communicate via an in-app chat on the deal page. Your job:
 1. Answer buyer questions about the deal (pre-deposit)
@@ -67,12 +96,11 @@ function buildDealChatPrompt(ctx: DealContext): string {
 Current deal:
 - Event: ${deal.event_name}${deal.venue ? ` at ${deal.venue}` : ""}${deal.event_date ? `, ${new Date(deal.event_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}` : ""}
 - Tickets: ${deal.num_tickets}x ${[deal.section, deal.row ? `Row ${deal.row}` : null, deal.seats ? `Seats ${deal.seats}` : null].filter(Boolean).join(", ")}
-- Price: ${priceDisplay} total
+- Price: ${priceDisplay} total (list price)
 - Transfer method: ${deal.transfer_method || "TBD"}
 - Status: ${deal.status}
-- Chat mode: ${deal.chat_mode} (open = multi-buyer, active = locked buyer+seller, dispute = private threads)
 - Seller: ${seller.name || "Seller"}
-- Buyer: ${buyer?.name || "(none yet)"}
+- Buyer: ${buyer?.name || "(prospective)"}${conversation?.negotiated_price_cents ? `\n- Previously negotiated price: $${(conversation.negotiated_price_cents / 100).toFixed(2)}` : ""}
 
 Terms agreed:
 - Seller transfers within 2 hours of deposit
@@ -82,12 +110,9 @@ Terms agreed:
 - Disputes adjudicated by AI based on evidence from both parties
 - Event canceled → full refund
 
-Rules for chat:
-- When chat_mode is "open": Multiple buyers may be asking questions. Answer factually about the deal. Don't negotiate prices — the price is fixed.
-- When chat_mode is "active": Only buyer and seller are in the chat. Guide the transfer process. Be helpful and keep things moving.
-- When chat_mode is "dispute": You're collecting evidence privately from each side. Ask structured questions. Request screenshots. Be impartial.
+${chatModeRules}
 
-Rules for adjudication:
+Rules for adjudication (dispute mode only):
 - Burden of proof is on the seller (they claimed to have specific tickets)
 - If evidence is ambiguous or insufficient, default ruling favors buyer (refund)
 - Non-responsive party after 4 hours loses the dispute
@@ -107,7 +132,7 @@ Keep responses concise. No more than 2-3 short paragraphs. Be friendly but profe
 
 export async function getAIResponse(
   context: DealContext
-): Promise<{ content: string; command: string | null }> {
+): Promise<{ content: string; command: string | null; depositRequestCents: number | null }> {
   const systemPrompt = buildDealChatPrompt(context);
 
   const messages = context.recentMessages
@@ -216,9 +241,17 @@ export async function getAIResponse(
   // Extract command if present
   const commandMatch = text.match(/<command>(.*?)<\/command>/);
   const command = commandMatch ? commandMatch[1] : null;
-  const content = text.replace(/<command>.*?<\/command>/g, "").trim();
 
-  return { content, command };
+  // Extract deposit request if present
+  const depositMatch = text.match(/<deposit_request\s+amount_cents="(\d+)"\s*\/>/);
+  const depositRequestCents = depositMatch ? parseInt(depositMatch[1], 10) : null;
+
+  const content = text
+    .replace(/<command>.*?<\/command>/g, "")
+    .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
+    .trim();
+
+  return { content, command, depositRequestCents };
 }
 
 // ─── Sell chat (streaming, returns streamText result) ────────────────

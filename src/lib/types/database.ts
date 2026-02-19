@@ -135,6 +135,7 @@ export interface Database {
           id: string;
           deal_id: string;
           sender_id: string | null;
+          conversation_id: string | null;
           role: string;
           channel: string;
           visibility: string;
@@ -147,6 +148,7 @@ export interface Database {
           id?: string;
           deal_id: string;
           sender_id?: string | null;
+          conversation_id?: string | null;
           role: string;
           channel?: string;
           visibility?: string;
@@ -159,6 +161,7 @@ export interface Database {
           id?: string;
           deal_id?: string;
           sender_id?: string | null;
+          conversation_id?: string | null;
           role?: string;
           channel?: string;
           visibility?: string;
@@ -166,6 +169,44 @@ export interface Database {
           media_urls?: string[] | null;
           metadata?: Json | null;
           created_at?: string;
+        };
+      };
+      conversations: {
+        Row: {
+          id: string;
+          deal_id: string;
+          buyer_id: string;
+          status: string;
+          negotiated_price_cents: number | null;
+          last_message_preview: string | null;
+          last_message_at: string | null;
+          message_count: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          deal_id: string;
+          buyer_id: string;
+          status?: string;
+          negotiated_price_cents?: number | null;
+          last_message_preview?: string | null;
+          last_message_at?: string | null;
+          message_count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          deal_id?: string;
+          buyer_id?: string;
+          status?: string;
+          negotiated_price_cents?: number | null;
+          last_message_preview?: string | null;
+          last_message_at?: string | null;
+          message_count?: number;
+          created_at?: string;
+          updated_at?: string;
         };
       };
       deal_events: {
@@ -202,4 +243,5 @@ export interface Database {
 export type User = Database["public"]["Tables"]["users"]["Row"];
 export type Deal = Database["public"]["Tables"]["deals"]["Row"];
 export type Message = Database["public"]["Tables"]["messages"]["Row"];
+export type Conversation = Database["public"]["Tables"]["conversations"]["Row"];
 export type DealEvent = Database["public"]["Tables"]["deal_events"]["Row"];

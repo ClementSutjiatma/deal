@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { getDepositParams } from "@/lib/escrow";
-import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT } from "@/lib/constants";
+import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, MAX_DISCOUNT_FRACTION } from "@/lib/constants";
 import type { Address } from "viem";
 
 export async function POST(
@@ -10,7 +10,7 @@ export async function POST(
 ) {
   const { id } = await params;
   const supabase = createServiceClient();
-  const { buyer_id } = await request.json();
+  const { buyer_id, conversation_id } = await request.json();
 
   // Fetch deal
   const { data: deal } = await (supabase
@@ -28,6 +28,25 @@ export async function POST(
     return NextResponse.json({ error: "Seller cannot be buyer" }, { status: 400 });
   }
 
+  // Determine price: use negotiated price from conversation if available
+  let priceCents = deal.price_cents;
+
+  if (conversation_id) {
+    const { data: conv } = await (supabase
+      .from("conversations") as any)
+      .select("negotiated_price_cents")
+      .eq("id", conversation_id)
+      .single() as { data: any };
+
+    if (conv?.negotiated_price_cents) {
+      // Validate negotiated price is within acceptable bounds
+      const minPrice = Math.round(deal.price_cents * (1 - MAX_DISCOUNT_FRACTION));
+      if (conv.negotiated_price_cents >= minPrice && conv.negotiated_price_cents <= deal.price_cents) {
+        priceCents = conv.negotiated_price_cents;
+      }
+    }
+  }
+
   // Fetch seller wallet
   const { data: seller } = await (supabase
     .from("users") as any)
@@ -42,15 +61,15 @@ export async function POST(
   const depositParams = getDepositParams(
     id,
     seller.wallet_address as Address,
-    deal.price_cents,
+    priceCents,
     SELLER_TRANSFER_TIMEOUT,
     BUYER_CONFIRM_TIMEOUT
   );
 
   return NextResponse.json({
     deal_id: id,
-    price_cents: deal.price_cents,
-    price_usdc: (deal.price_cents / 100).toFixed(2),
+    price_cents: priceCents,
+    price_usdc: (priceCents / 100).toFixed(2),
     deposit_params: {
       escrow_address: depositParams.escrowAddress,
       usdc_address: depositParams.usdcAddress,
