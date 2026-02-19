@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Send, Copy, Share2, Check } from "lucide-react";
@@ -16,17 +17,30 @@ export default function SellPage() {
   );
 }
 
-/** Wait for user to load before rendering chat (transport needs seller_id at construction) */
+/** Wait for user to load before rendering chat (transport needs auth token at construction) */
 function SellChatGate() {
   const { user } = useAppUser();
-  if (!user) {
+  const { getAccessToken } = usePrivy();
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchToken() {
+      const t = await getAccessToken();
+      setToken(t);
+    }
+    if (user) {
+      fetchToken();
+    }
+  }, [user, getAccessToken]);
+
+  if (!user || !token) {
     return (
       <div className="flex flex-col h-screen max-w-lg mx-auto items-center justify-center">
         <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
-  return <SellChat />;
+  return <SellChat accessToken={token} />;
 }
 
 /** Extract text content from a UIMessage's parts array */
@@ -42,8 +56,9 @@ function cleanContent(text: string): string {
   return text.replace(/<deal_data>[\s\S]*?<\/deal_data>/g, "").trim();
 }
 
-function SellChat() {
+function SellChat({ accessToken }: { accessToken: string }) {
   const { user } = useAppUser();
+  const { getAccessToken } = usePrivy();
   const [dealLink, setDealLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [input, setInput] = useState("");
@@ -57,7 +72,7 @@ function SellChat() {
     transport: new DefaultChatTransport({
       api: "/api/sell/chat",
       headers: {
-        "x-seller-id": user?.id ?? "",
+        Authorization: `Bearer ${accessToken}`,
       },
     }),
     messages: [
@@ -74,8 +89,13 @@ function SellChat() {
         // Give the server a moment to create the deal in its onFinish callback
         await new Promise((r) => setTimeout(r, 1500));
 
-        // Fetch the deal link
-        const res = await fetch(`/api/sell/deal-link?seller_id=${user.id}`);
+        // Fetch the deal link with auth
+        const token = await getAccessToken();
+        const headers: Record<string, string> = {};
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+        const res = await fetch("/api/sell/deal-link", { headers });
         if (res.ok) {
           const data = await res.json();
           if (data.deal_link) {

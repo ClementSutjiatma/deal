@@ -8,6 +8,14 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Admin-only route: verify ADMIN_API_KEY
+  const apiKey = request.headers.get("x-admin-api-key");
+  const expectedKey = process.env.ADMIN_API_KEY;
+
+  if (!expectedKey || apiKey !== expectedKey) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
   const supabase = createServiceClient();
   const { favor_buyer, ruling_text } = await request.json();

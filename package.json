@@ -10,7 +10,9 @@
     "lint": "eslint",
     "create-wallet": "tsx scripts/create-privy-wallet.ts",
     "deploy-contract": "tsx scripts/deploy-contract.ts",
-    "claim-faucet": "tsx scripts/claim-faucet.ts"
+    "claim-faucet": "tsx scripts/claim-faucet.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.45",
@@ -36,12 +38,14 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5.1.4",
     "babel-plugin-react-compiler": "1.0.0",
     "dotenv": "^17.3.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "hardhat": "^3.1.8",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.0.18"
   }
 }

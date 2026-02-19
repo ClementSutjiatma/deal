@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
+import { verifyTxReceipt } from "@/lib/escrow";
 import { notifyTransfer } from "@/lib/twilio";
 import { DEAL_STATUSES } from "@/lib/constants";
 
@@ -7,16 +9,31 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await authenticateRequest(request);
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { id } = await params;
   const supabase = createServiceClient();
-  const { seller_id } = await request.json();
+  const { transfer_tx_hash } = await request.json();
 
-  // Verify seller and deal status
+  if (!transfer_tx_hash) {
+    return NextResponse.json({ error: "Missing transfer_tx_hash" }, { status: 400 });
+  }
+
+  // Verify on-chain transaction
+  const txConfirmed = await verifyTxReceipt(transfer_tx_hash as `0x${string}`);
+  if (!txConfirmed) {
+    return NextResponse.json({ error: "Transaction not confirmed on-chain" }, { status: 400 });
+  }
+
+  // Verify seller and deal status using authenticated user
   const { data: deal } = await (supabase
     .from("deals") as any)
     .select("*")
     .eq("id", id)
-    .eq("seller_id", seller_id)
+    .eq("seller_id", auth.user.id)
     .eq("status", DEAL_STATUSES.FUNDED)
     .single() as { data: any };
 
@@ -30,6 +47,7 @@ export async function POST(
     .update({
       status: DEAL_STATUSES.TRANSFERRED,
       transferred_at: new Date().toISOString(),
+      transfer_tx_hash,
     })
     .eq("id", id);
 
@@ -41,7 +59,8 @@ export async function POST(
   await (supabase.from("deal_events") as any).insert({
     deal_id: id,
     event_type: "transferred",
-    actor_id: seller_id,
+    actor_id: auth.user.id,
+    metadata: { transfer_tx_hash },
   });
 
   // SMS to buyer

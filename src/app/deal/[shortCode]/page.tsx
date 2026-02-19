@@ -30,7 +30,7 @@ function makeDealIdBytes32(dealUuid: string): `0x${string}` {
 
 export default function DealPage({ params }: { params: Promise<{ shortCode: string }> }) {
   const { shortCode } = use(params);
-  const { authenticated, login } = usePrivy();
+  const { authenticated, login, getAccessToken } = usePrivy();
   const { user } = useAppUser();
   const [deal, setDeal] = useState<(Deal & { seller: { id: string; name: string | null } }) | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,6 +49,19 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const { balance: usdcBalance, formatted: usdcFormatted, refetch: refetchBalance } = useUsdcBalance(walletAddress);
 
   const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === "84532";
+
+  /** Helper to make authenticated API calls */
+  async function authFetch(url: string, options: RequestInit = {}) {
+    const token = await getAccessToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(options.headers as Record<string, string> || {}),
+    };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    return fetch(url, { ...options, headers });
+  }
 
   const fetchDeal = useCallback(async () => {
     try {
@@ -102,11 +115,26 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     if (!user) return;
 
     try {
-      // 1. Atomically claim the deal in DB first (prevents race conditions)
-      const claimRes = await fetch(`/api/deals/${deal!.id}/claim`, {
+      // 1. Get deposit params from API
+      const depositRes = await authFetch(`/api/deals/${deal!.id}/deposit`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyer_id: user.id }),
+      });
+
+      if (!depositRes.ok) {
+        const data = await depositRes.json();
+        alert(data.error || "Failed to get deposit parameters");
+        return;
+      }
+
+      const { deposit_params } = await depositRes.json();
+
+      // 2. Execute on-chain deposit (approve + deposit)
+      const txHash = await escrow.deposit(deposit_params);
+
+      // 3. Claim deal in DB with tx hash
+      const claimRes = await authFetch(`/api/deals/${deal!.id}/claim`, {
+        method: "POST",
+        body: JSON.stringify({ escrow_tx_hash: txHash }),
       });
 
       if (!claimRes.ok) {
@@ -115,38 +143,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         return;
       }
 
-      // 2. Get deposit params from API
-      const depositRes = await fetch(`/api/deals/${deal!.id}/deposit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyer_id: user.id }),
-      });
-
-      if (!depositRes.ok) {
-        alert("Failed to get deposit parameters");
-        await rollbackClaim(deal!.id);
-        return;
-      }
-
-      const { deposit_params } = await depositRes.json();
-
-      // 3. Execute on-chain deposit (approve + deposit)
-      const txHash = await escrow.deposit(deposit_params);
-
-      // 4. Update tx hash in DB
-      await fetch(`/api/deals/${deal!.id}/claim`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          buyer_id: user.id,
-          escrow_tx_hash: txHash,
-        }),
-      });
-
       fetchDeal();
     } catch {
-      // On-chain tx failed — roll back the DB claim
-      await rollbackClaim(deal!.id);
+      // On-chain tx failed
     }
   }
 
@@ -155,12 +154,11 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     if (!user) return;
 
     try {
-      await escrow.markTransferred(dealBytes32, escrowAddr);
+      const txHash = await escrow.markTransferred(dealBytes32, escrowAddr);
 
-      await fetch(`/api/deals/${deal!.id}/transfer`, {
+      await authFetch(`/api/deals/${deal!.id}/transfer`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ seller_id: user.id }),
+        body: JSON.stringify({ transfer_tx_hash: txHash }),
       });
 
       fetchDeal();
@@ -174,12 +172,11 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     if (!user) return;
 
     try {
-      await escrow.confirmReceipt(dealBytes32, escrowAddr);
+      const txHash = await escrow.confirmReceipt(dealBytes32, escrowAddr);
 
-      await fetch(`/api/deals/${deal!.id}/confirm`, {
+      await authFetch(`/api/deals/${deal!.id}/confirm`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyer_id: user.id }),
+        body: JSON.stringify({ confirm_tx_hash: txHash }),
       });
 
       fetchDeal();
@@ -193,29 +190,16 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     if (!user) return;
 
     try {
-      await escrow.openDispute(dealBytes32, escrowAddr);
+      const txHash = await escrow.openDispute(dealBytes32, escrowAddr);
 
-      await fetch(`/api/deals/${deal!.id}/dispute`, {
+      await authFetch(`/api/deals/${deal!.id}/dispute`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ buyer_id: user.id }),
+        body: JSON.stringify({ dispute_tx_hash: txHash }),
       });
 
       fetchDeal();
     } catch {
       // Error set in hook
-    }
-  }
-
-  async function rollbackClaim(dealId: string) {
-    try {
-      await fetch(`/api/deals/${dealId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "OPEN", buyer_id: null }),
-      });
-    } catch {
-      // Rollback failed — cron job will handle cleanup
     }
   }
 
