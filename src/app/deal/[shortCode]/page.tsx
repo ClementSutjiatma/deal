@@ -211,19 +211,25 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     setFundingLoading(true);
     try {
       if (isTestnet) {
-        // Testnet: claim USDC from CDP faucet
+        // Testnet: claim USDC from CDP faucet (1 USDC per claim, max 10/day)
+        // Calculate how much USDC is still needed
+        const requiredUsdc = deal ? deal.price_cents / 100 : 1;
+        const currentBalance = usdcBalance !== null ? Number(usdcBalance) / 1e6 : 0;
+        const needed = Math.ceil(Math.max(requiredUsdc - currentBalance, 1));
+
         const res = await fetch("/api/faucet", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address: walletAddress, token: "usdc" }),
+          body: JSON.stringify({ address: walletAddress, token: "usdc", amount: needed }),
         });
         if (!res.ok) {
           const data = await res.json();
           alert(data.error || "Failed to claim test USDC");
           return;
         }
-        // Wait a bit for the faucet tx to confirm, then refresh balance
-        await new Promise((r) => setTimeout(r, 5000));
+        // Wait for the faucet txs to confirm, then refresh balance
+        const { claims } = await res.json();
+        await new Promise((r) => setTimeout(r, Math.min(claims * 3000, 15000)));
         refetchBalance();
       } else {
         // Mainnet: open Privy funding modal (Coinbase Onramp / Apple Pay)
@@ -415,7 +421,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                     ) : (
                       <>
                         <Plus className="w-4 h-4" />
-                        {isTestnet ? "Get test USDC" : "Get USDC"}
+                        {isTestnet
+                          ? `Get ${Math.min(Math.ceil(Math.max((deal.price_cents / 100) - (usdcBalance !== null ? Number(usdcBalance) / 1e6 : 0), 1)), 10)} test USDC`
+                          : "Get USDC"}
                       </>
                     )}
                   </button>
