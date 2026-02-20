@@ -380,9 +380,11 @@ export async function POST(
 
         if (buyerDone && sellerDone) {
           // Both sides done — trigger adjudication (fire-and-forget)
-          const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+          // Use VERCEL_URL (deployment-specific) for self-referencing calls,
+          // NOT NEXT_PUBLIC_APP_URL (which points to production).
+          const baseUrl = process.env.VERCEL_URL
             ? `https://${process.env.VERCEL_URL}`
-            : "http://localhost:3000";
+            : (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000");
           fetch(`${baseUrl}/api/deals/${dealId}/adjudicate`, {
             method: "POST",
             headers: {
