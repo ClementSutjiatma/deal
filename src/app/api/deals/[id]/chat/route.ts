@@ -1,10 +1,13 @@
 import { NextRequest } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
-import { streamDealChat } from "@/lib/ai/agent";
+import { streamDealChat, adjudicateDispute } from "@/lib/ai/agent";
+import { resolveDisputeOnChain } from "@/lib/escrow";
+import { notifyDisputeResolved } from "@/lib/twilio";
 import type { DealContext } from "@/lib/ai/agent";
-import { CHAT_MODES, DISPUTE_SAFETY_CAP } from "@/lib/constants";
+import { CHAT_MODES, DEAL_STATUSES, DISPUTE_SAFETY_CAP } from "@/lib/constants";
 import type { UIMessage } from "ai";
+import type { Message } from "@/lib/types/database";
 
 export async function POST(
   request: NextRequest,
@@ -379,23 +382,144 @@ export async function POST(
         const sellerDone = role === "seller" ? true : freshDeal?.dispute_seller_done;
 
         if (buyerDone && sellerDone) {
-          // Both sides done — trigger adjudication (fire-and-forget)
-          // Use VERCEL_URL (deployment-specific) for self-referencing calls,
-          // NOT NEXT_PUBLIC_APP_URL (which points to production).
-          const baseUrl = process.env.VERCEL_URL
-            ? `https://${process.env.VERCEL_URL}`
-            : (process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000");
-          fetch(`${baseUrl}/api/deals/${dealId}/adjudicate`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-internal-secret": process.env.INTERNAL_API_SECRET || "",
-            },
-          }).catch((err) => console.error("Adjudication trigger failed:", err));
+          // Both sides done — trigger adjudication directly (no HTTP self-call
+          // which gets blocked by Vercel deployment protection on previews)
+          triggerAdjudication(dealId, resolvedConversationId, supabase).catch(
+            (err) => console.error("Adjudication failed:", err)
+          );
         }
       }
     }
   });
 
   return result.toUIMessageStreamResponse();
+}
+
+/**
+ * Run AI adjudication directly (no HTTP self-call).
+ * Factored out of the adjudicate route to avoid Vercel deployment protection
+ * blocking server-to-server calls on preview deployments.
+ */
+async function triggerAdjudication(
+  dealId: string,
+  conversationId: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+) {
+  // Fetch deal
+  const { data: deal } = await (supabase
+    .from("deals") as any)
+    .select("*")
+    .eq("id", dealId)
+    .eq("status", DEAL_STATUSES.DISPUTED)
+    .single() as { data: any };
+
+  if (!deal) {
+    console.error("Adjudication: deal not found or not disputed", dealId);
+    return;
+  }
+
+  // Fetch ALL dispute messages (both buyer_only and seller_only)
+  const { data: allMessages } = await (supabase
+    .from("messages") as any)
+    .select("*")
+    .eq("deal_id", dealId)
+    .in("visibility", ["buyer_only", "seller_only"])
+    .order("created_at", { ascending: true }) as { data: Message[] };
+
+  const messages = allMessages || [];
+  const buyerMessages = messages.filter((m) => m.visibility === "buyer_only");
+  const sellerMessages = messages.filter((m) => m.visibility === "seller_only");
+
+  // Fetch users
+  const { data: seller } = await (supabase
+    .from("users") as any)
+    .select("*")
+    .eq("id", deal.seller_id)
+    .single() as { data: any };
+
+  let buyer = null;
+  if (deal.buyer_id) {
+    buyer = (await (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as { data: any }).data;
+  }
+
+  // Run AI adjudication
+  let ruling;
+  try {
+    ruling = await adjudicateDispute(deal, seller, buyer, buyerMessages, sellerMessages);
+  } catch (err) {
+    console.error("AI adjudication failed:", err);
+    ruling = {
+      ruling: "BUYER" as const,
+      reasoning: "Adjudication system error. Defaulting to refund per dispute policy.",
+    };
+  }
+
+  const favorBuyer = ruling.ruling === "BUYER";
+
+  // Execute on-chain resolution
+  let txHash: string | null = null;
+  try {
+    txHash = await resolveDisputeOnChain(dealId, favorBuyer);
+  } catch (err) {
+    console.error("On-chain resolve failed:", err);
+    // Still insert ruling messages so users see the result
+  }
+
+  // Update deal status
+  const newStatus = favorBuyer ? DEAL_STATUSES.REFUNDED : DEAL_STATUSES.RELEASED;
+  await (supabase.from("deals") as any)
+    .update({
+      status: newStatus,
+      resolved_at: new Date().toISOString(),
+    })
+    .eq("id", dealId);
+
+  // Log event
+  await (supabase.from("deal_events") as any).insert({
+    deal_id: dealId,
+    event_type: "resolved",
+    metadata: {
+      favor_buyer: favorBuyer,
+      tx_hash: txHash,
+      ruling: ruling.reasoning,
+      automated: true,
+    },
+  });
+
+  // Insert ruling messages for both parties
+  const rulingMeta = {
+    dispute_ruling: ruling.ruling,
+    dispute_reasoning: ruling.reasoning,
+  };
+
+  await (supabase.from("messages") as any).insert([
+    {
+      deal_id: dealId,
+      conversation_id: conversationId,
+      role: "ai",
+      content: ruling.reasoning,
+      visibility: "buyer_only",
+      metadata: rulingMeta,
+    },
+    {
+      deal_id: dealId,
+      conversation_id: conversationId,
+      role: "ai",
+      content: ruling.reasoning,
+      visibility: "seller_only",
+      metadata: rulingMeta,
+    },
+  ]);
+
+  // SMS notify both parties
+  const outcome = favorBuyer ? "Refund to buyer" : "Funds released to seller";
+  if (seller?.phone) {
+    try { await notifyDisputeResolved(seller.phone, deal.short_code, outcome); } catch {}
+  }
+  if (buyer?.phone) {
+    try { await notifyDisputeResolved(buyer.phone, deal.short_code, outcome); } catch {}
+  }
+
+  console.log(`Adjudication complete for deal ${dealId}: ${ruling.ruling}`);
 }
