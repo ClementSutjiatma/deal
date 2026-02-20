@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
+import { getEmbeddedWalletId } from "@/lib/privy";
 import { sponsoredConfirm } from "@/lib/escrow";
 import { notifyConfirm } from "@/lib/twilio";
 import { DEAL_STATUSES } from "@/lib/constants";
@@ -29,8 +30,16 @@ export async function POST(
     return NextResponse.json({ error: "Deal not found or not in TRANSFERRED state" }, { status: 404 });
   }
 
-  // Get buyer's Privy wallet ID for server-side signing
-  const buyerWalletId = auth.user.privy_wallet_id;
+  // Resolve buyer's Privy wallet ID: try DB first, fall back to Privy API lookup
+  let buyerWalletId = auth.user.privy_wallet_id;
+  if (!buyerWalletId) {
+    buyerWalletId = await getEmbeddedWalletId(auth.privyUserId);
+    if (buyerWalletId) {
+      await (supabase.from("users") as any)
+        .update({ privy_wallet_id: buyerWalletId })
+        .eq("id", auth.user.id);
+    }
+  }
   if (!buyerWalletId) {
     return NextResponse.json({ error: "Buyer wallet not configured" }, { status: 400 });
   }

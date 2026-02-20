@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
+import { getEmbeddedWalletId } from "@/lib/privy";
 import { sponsoredApproveAndDeposit } from "@/lib/escrow";
 import { notifyDeposit } from "@/lib/twilio";
 import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, MAX_DISCOUNT_FRACTION, CONVERSATION_STATUSES } from "@/lib/constants";
@@ -35,7 +36,17 @@ export async function POST(
     return NextResponse.json({ error: "Seller cannot be buyer" }, { status: 400 });
   }
 
-  const buyerWalletId = auth.user.privy_wallet_id;
+  // Resolve buyer's Privy wallet ID: try DB first, fall back to Privy API lookup
+  let buyerWalletId = auth.user.privy_wallet_id;
+  if (!buyerWalletId) {
+    buyerWalletId = await getEmbeddedWalletId(auth.privyUserId);
+    // Cache it in the DB for future use
+    if (buyerWalletId) {
+      await (supabase.from("users") as any)
+        .update({ privy_wallet_id: buyerWalletId })
+        .eq("id", auth.user.id);
+    }
+  }
   if (!buyerWalletId) {
     return NextResponse.json({ error: "Buyer wallet not configured" }, { status: 400 });
   }
