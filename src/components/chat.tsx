@@ -101,7 +101,120 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
   } as UIMessage;
 }
 
-export function Chat({
+/**
+ * Chat wrapper — fetches initial messages from the DB, then mounts the
+ * inner ChatInner component which calls useChat.
+ *
+ * This two-component pattern is required because useChat's `messages`
+ * parameter is only read on mount (initial state). If we fetch messages
+ * asynchronously and pass them later, useChat ignores them.
+ */
+export function Chat(props: Props) {
+  const { getAccessToken } = usePrivy();
+  const {
+    dealId,
+    userId,
+    userRole,
+    conversationId,
+    accessToken,
+    dealStatus,
+    onDepositRequest,
+  } = props;
+
+  const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const knownMsgIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchMessages() {
+      if (userRole === "buyer" && !conversationId) {
+        if (!cancelled) {
+          setInitialMessages(null);
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      const params = new URLSearchParams();
+      if (conversationId) params.set("conversation_id", conversationId);
+
+      const headers: Record<string, string> = {};
+      const token = accessToken || await getAccessToken();
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      try {
+        const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
+        if (cancelled) return;
+
+        if (res.ok) {
+          const data: Message[] = await res.json();
+          const uiMsgs = data.map(dbMessageToUIMessage);
+
+          // Track known IDs for deduplication
+          data.forEach((m) => knownMsgIdsRef.current.add(m.id));
+
+          // Extract deposit requests from messages
+          if (onDepositRequest) {
+            for (const msg of data) {
+              const meta = msg.metadata as Record<string, unknown> | null;
+              if (meta?.deposit_request_cents) {
+                onDepositRequest(meta.deposit_request_cents as number);
+              }
+            }
+          }
+
+          setInitialMessages(uiMsgs);
+        } else {
+          setInitialMessages(null);
+        }
+      } catch {
+        if (!cancelled) setInitialMessages(null);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+
+    // Reset loading when key deps change (e.g. deal transitions)
+    setIsLoading(true);
+    fetchMessages();
+
+    return () => { cancelled = true; };
+  }, [dealId, userId, conversationId, accessToken, dealStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // Key ensures ChatInner unmounts/remounts when initialMessages or conversationId changes,
+  // so useChat re-initializes with fresh state.
+  const chatKey = `${conversationId || "no-conv"}-${initialMessages?.length ?? 0}-${dealStatus}`;
+
+  return (
+    <ChatInner
+      key={chatKey}
+      {...props}
+      initialMessages={initialMessages || undefined}
+      knownMsgIds={knownMsgIdsRef}
+    />
+  );
+}
+
+// ─── Inner chat component (calls useChat) ────────────────────────────
+
+interface InnerProps extends Props {
+  initialMessages?: UIMessage[];
+  knownMsgIds: React.RefObject<Set<string>>;
+}
+
+function ChatInner({
   dealId,
   userId,
   userRole,
@@ -126,20 +239,16 @@ export function Chat({
   confirmLoading,
   disputeLoading,
   transferMethod,
-}: Props) {
-  const { getAccessToken } = usePrivy();
+  initialMessages,
+  knownMsgIds,
+}: InnerProps) {
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
-  const [initialMessages, setInitialMessages] = useState<UIMessage[] | undefined>(undefined);
   const [realtimeMessages, setRealtimeMessages] = useState<Message[]>([]);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supabase = createClient();
-
-  // Track known message IDs to avoid duplicates between useChat and realtime
-  const knownMsgIds = useRef(new Set<string>());
 
   // Build transport only when we have what we need.
   const transport = useMemo(() => {
@@ -157,59 +266,6 @@ export function Chat({
     });
   }, [dealId, accessToken, conversationId, anonymousId, userRole]);
 
-  // Fetch initial messages from Supabase (GET-only — no legacy POST)
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchMessages() {
-      if (userRole === "buyer" && !conversationId) return;
-
-      const params = new URLSearchParams();
-      if (conversationId) params.set("conversation_id", conversationId);
-
-      const headers: Record<string, string> = {};
-      const token = accessToken || await getAccessToken();
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      try {
-        const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
-        if (cancelled) return;
-
-        if (res.ok) {
-          const data: Message[] = await res.json();
-
-          // Convert to UIMessages
-          const uiMsgs = data.map(dbMessageToUIMessage);
-          setInitialMessages(uiMsgs.length > 0 ? uiMsgs : undefined);
-
-          // Track IDs
-          data.forEach((m) => knownMsgIds.current.add(m.id));
-
-          // Check for deposit requests in existing messages
-          if (onDepositRequest) {
-            for (const msg of data) {
-              const meta = msg.metadata as Record<string, unknown> | null;
-              if (meta?.deposit_request_cents) {
-                onDepositRequest(meta.deposit_request_cents as number);
-              }
-            }
-          }
-        } else {
-          setInitialMessages(undefined);
-        }
-      } catch {
-        if (!cancelled) setInitialMessages(undefined);
-      } finally {
-        if (!cancelled) setIsLoadingMessages(false);
-      }
-    }
-    fetchMessages();
-
-    return () => { cancelled = true; };
-  }, [dealId, userId, conversationId, accessToken, dealStatus]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // onFinish handler for useChat — check for tool parts
   const handleFinish = useCallback(({ message }: { message: UIMessage }) => {
     if (onDepositRequest) {
@@ -226,16 +282,17 @@ export function Chat({
     }
   }, [onDepositRequest]);
 
-  // useChat for streaming AI responses
+  // useChat — initialized with messages from the DB.
+  // This hook is called exactly once per ChatInner mount (parent keys on chatKey).
   const { messages: aiMessages, sendMessage, status } = useChat({
     ...(transport ? { transport } : {}),
-    ...(initialMessages ? { messages: initialMessages } : {}),
+    ...(initialMessages && initialMessages.length > 0 ? { messages: initialMessages } : {}),
     onFinish: handleFinish,
   });
 
   const isStreaming = status === "streaming" || status === "submitted";
 
-  // Subscribe to realtime for messages from OTHER users (seller/buyer messages, system messages)
+  // Subscribe to realtime for messages from OTHER users
   useEffect(() => {
     if (userRole === "buyer" && !conversationId) return;
 
@@ -258,9 +315,7 @@ export function Chat({
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
 
-          // AI messages: always allow through realtime (dedup in merge step)
-          // Server-inserted AI messages (deposit confirmation, system messages)
-          // don't come through the useChat stream, so they need realtime.
+          // AI messages: always allow through (dedup in merge step)
           if (newMsg.role === "ai") {
             knownMsgIds.current.add(newMsg.id);
             setRealtimeMessages((prev) => {
@@ -268,7 +323,6 @@ export function Chat({
               return [...prev, newMsg];
             });
 
-            // Check for deposit request
             if (onDepositRequest) {
               const meta = newMsg.metadata as Record<string, unknown> | null;
               if (meta?.deposit_request_cents) {
@@ -278,7 +332,7 @@ export function Chat({
             return;
           }
 
-          // Skip messages sent by current user — useChat handles these optimistically
+          // Skip own messages — useChat handles them optimistically
           if (newMsg.role === "buyer" && userRole === "buyer") {
             knownMsgIds.current.add(newMsg.id);
             return;
@@ -424,15 +478,6 @@ export function Chat({
     }
   }
 
-  // Show loading spinner until initial messages are loaded
-  if (isLoadingMessages) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-full">
       {/* Messages */}
@@ -461,7 +506,6 @@ export function Chat({
                 {/* Render parts */}
                 {msg.parts.map((part, i) => {
                   if (part.type === "text" && part.text) {
-                    // Strip any <command> or <deposit_request> tags from rendered text
                     const cleanText = part.text
                       .replace(/<command>.*?<\/command>/g, "")
                       .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
@@ -470,7 +514,7 @@ export function Chat({
                     return <MarkdownText key={i}>{cleanText}</MarkdownText>;
                   }
 
-                  // Tool parts: requestDeposit, confirmTransfer, confirmReceipt
+                  // Tool parts
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const p = part as any;
                   const isToolReady = p.state === "output-available" || p.state === "input-available";
@@ -535,7 +579,7 @@ export function Chat({
           );
         })}
 
-        {/* Fallback deposit prompt: show when offer is accepted but no tool call in messages */}
+        {/* Fallback deposit prompt */}
         {buyerOfferAccepted && dealStatus === "OPEN" && userRole === "buyer" && !lastDepositMsgId && dealPriceCents && (onDeposit || onLogin) && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
@@ -554,7 +598,7 @@ export function Chat({
           </div>
         )}
 
-        {/* Fallback transfer prompt: show when FUNDED, seller is in chat, no tool call yet */}
+        {/* Fallback transfer prompt */}
         {dealStatus === "FUNDED" && userRole === "seller" && !lastTransferMsgId && onTransfer && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
@@ -571,7 +615,7 @@ export function Chat({
           </div>
         )}
 
-        {/* Fallback receipt prompt: show when TRANSFERRED, buyer is in chat, no tool call yet */}
+        {/* Fallback receipt prompt */}
         {dealStatus === "TRANSFERRED" && userRole === "buyer" && !lastReceiptMsgId && onConfirm && onDispute && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
