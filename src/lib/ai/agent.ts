@@ -1,5 +1,5 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { generateText, streamText, type ModelMessage } from "ai";
+import { generateText, streamText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
 
 interface DealContext {
@@ -11,8 +11,26 @@ interface DealContext {
   conversation?: Conversation | null;
 }
 
+// Anthropic's provider-defined web search tool
+const webSearchTool = anthropic.tools.webSearch_20250305({
+  maxUses: 3,
+});
+
+function todayFormatted(): string {
+  return new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 function buildDealCreationPrompt(): string {
+  const today = todayFormatted();
+
   return `You are an AI assistant helping a seller create a ticket escrow deal. Your job is to extract structured ticket listing details from the seller's free-text description.
+
+Today's date: ${today}
 
 You communicate in a friendly, concise way — like a helpful friend who knows about tickets.
 
@@ -36,6 +54,16 @@ Rules:
 4. Nudge for row and seat numbers — this is the #1 cause of disputes
 5. Once ALL required fields are populated, generate a JSON block with the structured data
 6. NEVER generate a deal link until all fields are confirmed
+
+EVENT VERIFICATION (IMPORTANT):
+- You have access to web search. When a seller mentions an event, artist, or venue, use web search to verify:
+  * Is this a real event that exists?
+  * Does the date match the actual event schedule?
+  * Does the venue match where the event is actually being held?
+- If the event details don't match public sources, politely flag this to the seller and ask them to double-check.
+- If you find the correct date or venue, suggest the correction. For example: "I searched and it looks like that show is actually on March 15th at Madison Square Garden — want me to use those details?"
+- ALWAYS verify before creating the deal. This protects both sellers and buyers from listing errors.
+- If you can't verify (e.g. private event, small venue), that's fine — just proceed with what the seller provides.
 
 When all fields are confirmed, output EXACTLY this format at the end of your message:
 
@@ -69,7 +97,7 @@ After the deal is created, the conversation continues. The seller can still ask 
 function buildDealChatPrompt(ctx: DealContext): string {
   const { deal, seller, buyer, conversation } = ctx;
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
-  const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const today = todayFormatted();
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
 
   return `You are Dealbay, an escrow agent for a peer-to-peer ticket sale. You communicate via an in-app chat on the deal page. Your job:
@@ -96,6 +124,11 @@ Terms agreed:
 - Buyer timeout → automatic release to seller
 - Disputes adjudicated by Dealbay based on evidence from both parties
 - Event canceled → full refund
+
+EVENT VERIFICATION:
+- You have access to web search. If a buyer asks about event details (date, venue, artist lineup, etc.) and you're not certain, search to confirm.
+- If you find that the event has been canceled, rescheduled, or the details differ from what's listed, proactively inform the buyer.
+- During disputes, you can search for event cancellation notices, venue policies, or other relevant information.
 
 Rules for chat:
 - You are chatting with a prospective buyer in their PRIVATE thread. The seller is NOT in this chat — you represent the seller.
@@ -236,6 +269,10 @@ export async function getAIResponse(
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: mergedMessages,
+    tools: {
+      web_search: webSearchTool,
+    },
+    stopWhen: stepCountIs(3),
     maxOutputTokens: 1024,
   });
 
@@ -279,6 +316,10 @@ export function streamDealCreation(
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: apiMessages,
+    tools: {
+      web_search: webSearchTool,
+    },
+    stopWhen: stepCountIs(3),
     maxOutputTokens: 1024,
     onFinish: onFinish
       ? async (event) => {
@@ -308,6 +349,10 @@ export async function getDealCreationResponse(
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: apiMessages,
+    tools: {
+      web_search: webSearchTool,
+    },
+    stopWhen: stepCountIs(3),
     maxOutputTokens: 1024,
   });
 

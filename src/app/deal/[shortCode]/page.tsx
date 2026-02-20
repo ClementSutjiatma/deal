@@ -7,7 +7,6 @@ import { ProgressTracker } from "@/components/progress-tracker";
 import { Chat } from "@/components/chat";
 import { SellerDashboard } from "@/components/seller-dashboard";
 import { ConversationReadView } from "@/components/conversation-read-view";
-import { ListingsDropdown } from "@/components/listings-dropdown";
 import { Copy, Check, ExternalLink, Lock, Clock, AlertTriangle, Loader2, Plus, Wallet } from "lucide-react";
 import { useEscrow, type EscrowStep } from "@/lib/hooks/useEscrow";
 import { useUsdcBalance } from "@/lib/hooks/useUsdcBalance";
@@ -467,10 +466,6 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             {deal.transfer_method ? ` · ${deal.transfer_method}` : ""}
           </p>
           </div>
-          {/* Listings dropdown -- top right */}
-          {isSeller && user && (
-            <ListingsDropdown sellerId={user.id} currentDealId={deal.id} />
-          )}
         </div>
 
         <ProgressTracker status={deal.status as DealStatus} />
