@@ -10,6 +10,7 @@ import { Send, Paperclip, X } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
 import { TransferPrompt } from "@/components/transfer-prompt";
 import { ReceiptPrompt } from "@/components/receipt-prompt";
+import { DisputeRuling } from "@/components/dispute-ruling";
 import { MarkdownText } from "@/components/markdown-text";
 import type { Message } from "@/lib/types/database";
 
@@ -48,6 +49,8 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
   const depositCents = meta?.deposit_request_cents as number | undefined;
   const transferMethod = meta?.transfer_method as string | undefined;
   const receiptMethod = meta?.receipt_method as string | undefined;
+  const disputeRuling = meta?.dispute_ruling as string | undefined;
+  const disputeReasoning = meta?.dispute_reasoning as string | undefined;
 
   // Build parts array
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -90,6 +93,15 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
         state: "output-available",
         input: { transfer_method: receiptMethod },
         output: { transfer_method: receiptMethod },
+      });
+    }
+    if (disputeRuling) {
+      parts.push({
+        type: "tool-resolveDispute",
+        toolCallId: `db-ruling-${msg.id}`,
+        state: "output-available",
+        input: { ruling: disputeRuling, reasoning: disputeReasoning || "" },
+        output: { ruling: disputeRuling, reasoning: disputeReasoning || "" },
       });
     }
   }
@@ -613,6 +625,21 @@ function ChatInner({
                         isLatest={msg.id === lastReceiptMsgId}
                       />
                     );
+                  }
+
+                  // Dispute ruling tool (both buyer and seller)
+                  if (p.type === "tool-resolveDispute" && isToolReady) {
+                    const rulingData = p.output ?? p.input;
+                    if (rulingData?.ruling) {
+                      return (
+                        <DisputeRuling
+                          key={i}
+                          ruling={rulingData.ruling}
+                          reasoning={rulingData.reasoning || ""}
+                          dealStatus={dealStatus}
+                        />
+                      );
+                    }
                   }
 
                   return null;

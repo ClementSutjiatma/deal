@@ -96,3 +96,25 @@ export const dealChatTools = {
     execute: async ({ transfer_method }) => ({ transfer_method }),
   }),
 };
+
+/**
+ * AI SDK tools for dispute adjudication.
+ *
+ * Used only in the adjudication route (not during evidence collection).
+ * The resolveDispute tool triggers on-chain resolution automatically.
+ */
+export const disputeTools = {
+  resolveDispute: tool({
+    description:
+      "Issue a final dispute ruling after reviewing evidence from both parties. This triggers automatic on-chain resolution (refund or release). Call this ONLY during adjudication, never during evidence collection.",
+    inputSchema: z.object({
+      ruling: z
+        .enum(["BUYER", "SELLER"])
+        .describe("Who wins the dispute — BUYER (refund) or SELLER (release funds)"),
+      reasoning: z
+        .string()
+        .describe("Clear explanation of the ruling citing specific evidence from both parties"),
+    }),
+    execute: async ({ ruling, reasoning }) => ({ ruling, reasoning }),
+  }),
+};

@@ -1,7 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { streamText, stepCountIs, type ModelMessage } from "ai";
+import { streamText, generateText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
-import { dealChatTools, dealCreationTools } from "./tools";
+import { dealChatTools, dealCreationTools, disputeTools } from "./tools";
 
 export interface DealContext {
   deal: Deal;
@@ -156,21 +156,29 @@ Rules for chat:
   * If the current message is from the BUYER: Ask them to check their ${deal.transfer_method || "transfer method"} account for the tickets. Call the confirmReceipt tool with { transfer_method: "${deal.transfer_method || "TBD"}" }. This renders confirm/dispute buttons for the buyer.
   * If the current message is from the SELLER: Let them know the buyer has been notified to confirm receipt.
   * ALWAYS call the confirmReceipt tool when the buyer first messages after transfer. Don't just tell them to click a button — the tool renders the button.
-- When chat_mode is "dispute": You're collecting evidence privately from each side. Ask structured questions. Request screenshots. Be impartial.
+- When chat_mode is "dispute": You're collecting evidence privately from ONE party at a time. See DISPUTE MODE below.
 
-Rules for adjudication (dispute mode only):
-- Burden of proof is on the seller (they claimed to have specific tickets)
-- If evidence is ambiguous or insufficient, default ruling favors buyer (refund)
-- Non-responsive party after 4 hours loses the dispute
-- Evidence = uploaded screenshots, transfer confirmations, account screenshots
-- Your ruling is final per the terms both parties agreed to
-- Always explain your reasoning in the ruling
+DISPUTE MODE — EVIDENCE COLLECTION (5 questions max):
+You are collecting evidence from the **${ctx.senderRole}**. This is a PRIVATE conversation — the other party CANNOT see these messages.
+
+Questions asked so far: ${ctx.senderRole === "buyer" ? ctx.deal.dispute_buyer_q : ctx.deal.dispute_seller_q}/5
+
+Your job is to ask structured questions to understand the ${ctx.senderRole === "buyer" ? "issue" : "seller's side"}:
+- Question 1: What happened? (buyer) / What evidence do you have? (seller)
+- Question 2: Request screenshot evidence (transfer confirmation, ticket details, etc.)
+- Questions 3-5: Follow-up clarifications based on their answers
+
+Rules:
+- Ask ONE question at a time. Wait for the answer before asking the next.
+- Do NOT issue a ruling — you only see one side. Adjudication happens separately with ALL evidence.
+- Do NOT call the resolveDispute tool — that's only for adjudication.
+- After 5 questions (or if they've provided clear, complete evidence earlier), say: "Thank you for providing your evidence. We'll review both sides and issue a ruling shortly."
+- Be impartial and professional. Don't reveal the other party's claims.
+- Encourage uploading screenshots — they carry more weight than text claims.
 
 When you need to trigger a state change, output one of these commands at the END of your message:
 <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> — when buyer's offer meets or exceeds seller's minimum (replace AMOUNT_CENTS with actual number, e.g. PRICE_ACCEPTED:15000)
 <command>STATE_TRANSFERRED</command> — when seller confirms transfer in chat
-<command>STATE_DISPUTE_RULING:BUYER</command> — ruling favors buyer (refund)
-<command>STATE_DISPUTE_RULING:SELLER</command> — ruling favors seller (release)
 
 Keep responses concise. No more than 2-3 short paragraphs. Be friendly but professional.`;
 }
@@ -292,14 +300,18 @@ export function streamDealChat(
   const systemPrompt = buildDealChatPrompt(context);
   const mergedMessages = buildMergedMessages(context);
 
+  // In dispute mode, only provide web_search (no deal lifecycle tools).
+  // Dispute tools (resolveDispute) are only used in the adjudication route.
+  const isDispute = context.deal.chat_mode === "dispute";
+  const tools = isDispute
+    ? { web_search: webSearchTool }
+    : { ...dealChatTools, web_search: webSearchTool };
+
   return streamText({
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: mergedMessages,
-    tools: {
-      ...dealChatTools,
-      web_search: webSearchTool,
-    },
+    tools,
     maxOutputTokens: 1024,
     stopWhen: stepCountIs(3),
     onFinish: onFinish
@@ -370,4 +382,89 @@ export function streamDealCreation(
         }
       : undefined,
   });
+}
+
+// ─── Dispute adjudication (non-streaming, one-shot decision) ──────────
+
+export interface AdjudicationResult {
+  ruling: "BUYER" | "SELLER";
+  reasoning: string;
+}
+
+export async function adjudicateDispute(
+  deal: Deal,
+  seller: User,
+  buyer: User | null,
+  buyerMessages: Message[],
+  sellerMessages: Message[],
+): Promise<AdjudicationResult> {
+  const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
+  const today = todayFormatted();
+
+  const buyerEvidence = buyerMessages
+    .map((m) => `[${m.role === "ai" ? "Dealbay" : "Buyer"}]: ${m.content}`)
+    .join("\n");
+
+  const sellerEvidence = sellerMessages
+    .map((m) => `[${m.role === "ai" ? "Dealbay" : "Seller"}]: ${m.content}`)
+    .join("\n");
+
+  const systemPrompt = `You are adjudicating a ticket sale dispute on Dealbay. Review the evidence from both parties and issue a ruling by calling the resolveDispute tool.
+
+Today's date: ${today}
+
+DEAL CONTEXT:
+- Event: ${deal.event_name}${deal.venue ? ` at ${deal.venue}` : ""}${deal.event_date ? `, ${new Date(deal.event_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}` : ""}
+- Tickets: ${deal.num_tickets}x ${[deal.section, deal.row ? `Row ${deal.row}` : null, deal.seats ? `Seats ${deal.seats}` : null].filter(Boolean).join(", ")}
+- Price: ${priceDisplay}
+- Transfer method: ${deal.transfer_method || "unknown"}
+- Seller: ${seller.name || "Seller"}
+- Buyer: ${buyer?.name || "Buyer"}
+- Dispute filed: ${deal.disputed_at || "unknown"}
+
+RULES:
+- Burden of proof is on the seller (they claimed to have specific tickets and transfer them)
+- Screenshot evidence carries more weight than text claims
+- If evidence is ambiguous or insufficient, default ruling favors buyer (refund)
+- If the seller provided no evidence or didn't respond, rule for buyer
+- If the buyer's complaint is clearly baseless (e.g. tickets were received and confirmed working), rule for seller
+- Your ruling is FINAL — explain your reasoning clearly
+
+You MUST call the resolveDispute tool with your ruling and reasoning. Do not just write text.`;
+
+  const userMessage = `BUYER'S EVIDENCE (${buyerMessages.filter((m) => m.role !== "ai").length} responses):
+${buyerEvidence || "(Buyer provided no evidence)"}
+
+---
+
+SELLER'S EVIDENCE (${sellerMessages.filter((m) => m.role !== "ai").length} responses):
+${sellerEvidence || "(Seller provided no evidence)"}
+
+---
+
+Please review the evidence and call the resolveDispute tool with your ruling.`;
+
+  const result = await generateText({
+    model: anthropic("claude-sonnet-4-5-20250929"),
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+    tools: disputeTools,
+    maxOutputTokens: 1024,
+  });
+
+  // Extract the resolveDispute tool call
+  for (const step of result.steps) {
+    for (const tc of step.staticToolCalls) {
+      if (tc.toolName === "resolveDispute") {
+        const input = tc.input as { ruling: "BUYER" | "SELLER"; reasoning: string };
+        return input;
+      }
+    }
+  }
+
+  // Fallback: if no tool call was made, default to buyer (refund)
+  return {
+    ruling: "BUYER",
+    reasoning: result.text || "Unable to reach a determination. Defaulting to refund per dispute policy.",
+  };
 }

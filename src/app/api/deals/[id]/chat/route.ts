@@ -3,7 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
 import { streamDealChat } from "@/lib/ai/agent";
 import type { DealContext } from "@/lib/ai/agent";
-import { CHAT_MODES } from "@/lib/constants";
+import { CHAT_MODES, DISPUTE_MAX_QUESTIONS } from "@/lib/constants";
 import type { UIMessage } from "ai";
 
 export async function POST(
@@ -143,6 +143,15 @@ export async function POST(
   let visibility = "all";
   if (deal.chat_mode === CHAT_MODES.DISPUTE) {
     visibility = role === "seller" ? "seller_only" : "buyer_only";
+
+    // Reject new messages if this party has already completed their 5 questions
+    const currentQCount = role === "buyer" ? (deal.dispute_buyer_q || 0) : (deal.dispute_seller_q || 0);
+    if (currentQCount >= DISPUTE_MAX_QUESTIONS) {
+      return new Response(
+        JSON.stringify({ error: "Evidence collection complete. Waiting for ruling." }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
   }
 
   // Insert user message into Supabase
@@ -298,6 +307,35 @@ export async function POST(
               : {}),
           })
           .eq("id", resolvedConversationId);
+      }
+    }
+
+    // Dispute mode: track question count and auto-trigger adjudication
+    if (deal.chat_mode === CHAT_MODES.DISPUTE) {
+      const counterField = role === "buyer" ? "dispute_buyer_q" : "dispute_seller_q";
+      const currentCount = role === "buyer" ? (deal.dispute_buyer_q || 0) : (deal.dispute_seller_q || 0);
+      const newCount = currentCount + 1;
+
+      // Increment question counter
+      await (supabase.from("deals") as any)
+        .update({ [counterField]: newCount })
+        .eq("id", dealId);
+
+      // Check if both sides have completed their questions
+      const otherCount = role === "buyer" ? (deal.dispute_seller_q || 0) : (deal.dispute_buyer_q || 0);
+
+      if (newCount >= DISPUTE_MAX_QUESTIONS && otherCount >= DISPUTE_MAX_QUESTIONS) {
+        // Both sides done — trigger adjudication (fire-and-forget)
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+          ? `https://${process.env.VERCEL_URL}`
+          : "http://localhost:3000";
+        fetch(`${baseUrl}/api/deals/${dealId}/adjudicate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-internal-secret": process.env.INTERNAL_API_SECRET || "",
+          },
+        }).catch((err) => console.error("Adjudication trigger failed:", err));
       }
     }
   });
