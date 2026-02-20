@@ -235,35 +235,39 @@ export async function POST(
         .eq("id", dealId);
     }
 
-    // Insert AI message into Supabase
-    await (supabase
-      .from("messages") as any)
-      .insert({
-        deal_id: dealId,
-        sender_id: null,
-        conversation_id: resolvedConversationId,
-        role: "ai",
-        content: cleanContent,
-        visibility,
-        metadata: depositRequestCents
-          ? { deposit_request_cents: depositRequestCents }
-          : null,
-      });
-
-    // Update conversation metadata
-    if (resolvedConversationId) {
-      const preview = cleanContent.slice(0, 100);
+    // Only insert AI message if there's actual content or a deposit request.
+    // Tool-only responses (e.g. requestDeposit) produce empty text —
+    // storing these as empty messages breaks the conversation history.
+    if (cleanContent || depositRequestCents) {
       await (supabase
-        .from("conversations") as any)
-        .update({
-          last_message_preview: preview,
-          last_message_at: new Date().toISOString(),
-          message_count: (conversation?.message_count || 0) + 2,
-          ...(depositRequestCents
-            ? { negotiated_price_cents: depositRequestCents }
-            : {}),
-        })
-        .eq("id", resolvedConversationId);
+        .from("messages") as any)
+        .insert({
+          deal_id: dealId,
+          sender_id: null,
+          conversation_id: resolvedConversationId,
+          role: "ai",
+          content: cleanContent || `Deposit requested: $${(depositRequestCents! / 100).toFixed(2)}`,
+          visibility,
+          metadata: depositRequestCents
+            ? { deposit_request_cents: depositRequestCents }
+            : null,
+        });
+
+      // Update conversation metadata
+      if (resolvedConversationId) {
+        const preview = (cleanContent || `Deposit: $${(depositRequestCents! / 100).toFixed(2)}`).slice(0, 100);
+        await (supabase
+          .from("conversations") as any)
+          .update({
+            last_message_preview: preview,
+            last_message_at: new Date().toISOString(),
+            message_count: (conversation?.message_count || 0) + 2,
+            ...(depositRequestCents
+              ? { negotiated_price_cents: depositRequestCents }
+              : {}),
+          })
+          .eq("id", resolvedConversationId);
+      }
     }
   });
 
