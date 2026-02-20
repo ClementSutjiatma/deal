@@ -13,8 +13,11 @@ export async function POST(request: NextRequest) {
 
   let privyUserId: string;
   try {
-    const verifiedClaims = await getPrivyClient().verifyAuthToken(token);
-    privyUserId = verifiedClaims.userId;
+    const verifiedClaims = await getPrivyClient()
+      .utils()
+      .auth()
+      .verifyAccessToken(token);
+    privyUserId = verifiedClaims.user_id;
   } catch {
     return NextResponse.json({ error: "Invalid token" }, { status: 401 });
   }

@@ -12,7 +12,7 @@
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-import { PrivyClient } from "@privy-io/server-auth";
+import { PrivyClient } from "@privy-io/node";
 
 const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
 const appSecret = process.env.PRIVY_APP_SECRET;
@@ -25,19 +25,19 @@ if (!appId || !appSecret) {
 }
 
 async function main() {
-  const privy = new PrivyClient(appId!, appSecret!);
+  const privy = new PrivyClient({ appId: appId!, appSecret: appSecret! });
 
   console.log("Creating Privy server wallet on Ethereum (Base)...\n");
 
-  const wallet = await privy.walletApi.create({
-    chainType: "ethereum",
+  const wallet = await privy.wallets().create({
+    chain_type: "ethereum",
   });
 
   console.log("Server wallet created successfully!\n");
   console.log("  Wallet ID:  ", wallet.id);
   console.log("  Address:    ", wallet.address);
-  console.log("  Chain Type: ", wallet.chainType);
-  console.log("  Created At: ", wallet.createdAt);
+  console.log("  Chain Type: ", wallet.chain_type);
+  console.log("  Created At: ", wallet.created_at);
   console.log();
   console.log("Add these to your .env.local:");
   console.log();

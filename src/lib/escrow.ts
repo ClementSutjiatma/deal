@@ -7,8 +7,8 @@ import {
   toHex,
   type Address,
 } from "viem";
-import { createViemAccount } from "@privy-io/server-auth/viem";
-import { getPrivyClient } from "./privy";
+import { createViemAccount } from "@privy-io/node/viem";
+import { getPrivyClient, getAuthorizationContext } from "./privy";
 import { USDC_DECIMALS } from "./constants";
 import { ESCROW_ABI, ERC20_ABI } from "./abis";
 import { chain, escrowAddress, usdcAddress, rpcUrl } from "./chain";
@@ -34,11 +34,10 @@ export async function getPlatformWalletClient() {
     );
   }
 
-  const account = await createViemAccount({
+  const account = createViemAccount(getPrivyClient(), {
     walletId,
     address: walletAddress as `0x${string}`,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    privy: getPrivyClient() as any,
+    authorizationContext: getAuthorizationContext(),
   });
 
   return createWalletClient({
@@ -95,12 +94,8 @@ export async function triggerAutoRelease(dealUuid: string): Promise<string> {
 
 /**
  * Send a gas-sponsored transaction from a user's embedded wallet.
- * Uses Privy's walletApi.rpc() server-side so the user doesn't need ETH.
- *
- * Note: We use the deprecated rpc() method instead of ethereum.sendTransaction()
- * because the newer method drops `transactionId` from the response. With gas
- * sponsorship, the tx hash is empty until on-chain confirmation, so we need
- * the transactionId to poll for status.
+ * Uses @privy-io/node's wallets().ethereum().sendTransaction() which
+ * returns { hash, transaction_id } with sponsor: true.
  */
 async function sponsoredSendTransaction(
   walletId: string,
@@ -110,18 +105,16 @@ async function sponsoredSendTransaction(
   const privy = getPrivyClient();
   const caip2 = `eip155:${chain.id}`;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const response = await (privy as any).walletApi.rpc({
-    walletId,
-    method: "eth_sendTransaction",
+  const response = await privy.wallets().ethereum().sendTransaction(walletId, {
     caip2,
     sponsor: true,
     params: { transaction: { to, data } },
+    authorization_context: getAuthorizationContext(),
   });
 
   return {
-    transactionId: response.data.transactionId,
-    hash: response.data.hash,
+    transactionId: response.transaction_id ?? "",
+    hash: response.hash,
   };
 }
 
@@ -137,25 +130,25 @@ async function waitForSponsoredTransaction(
   const privy = getPrivyClient();
 
   for (let i = 0; i < maxAttempts; i++) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tx = await (privy as any).walletApi.getTransaction({
-      id: transactionId,
-    });
+    const tx = await privy.transactions().get(transactionId);
 
     switch (tx.status) {
       case "confirmed":
-        return tx.transactionHash;
+      case "finalized":
+        return tx.transaction_hash ?? "";
       case "execution_reverted":
         throw new Error(
-          `Transaction reverted (txId: ${transactionId}, hash: ${tx.transactionHash})`
+          `Transaction reverted (txId: ${transactionId}, hash: ${tx.transaction_hash})`
         );
       case "failed":
         throw new Error(`Transaction failed (txId: ${transactionId})`);
       case "replaced":
         throw new Error(`Transaction replaced (txId: ${transactionId})`);
+      case "provider_error":
+        throw new Error(`Transaction provider error (txId: ${transactionId})`);
     }
 
-    // Still 'broadcasted' or 'delayed' — keep polling
+    // Still 'broadcasted' or 'pending' — keep polling
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 

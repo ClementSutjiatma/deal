@@ -18,8 +18,8 @@ config({ path: ".env.local" });
 
 import { createWalletClient, createPublicClient, http, type Hex } from "viem";
 import { base, baseSepolia } from "viem/chains";
-import { PrivyClient } from "@privy-io/server-auth";
-import { createViemAccount } from "@privy-io/server-auth/viem";
+import { PrivyClient } from "@privy-io/node";
+import { createViemAccount } from "@privy-io/node/viem";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
@@ -74,12 +74,10 @@ async function main() {
   }
 
   // Create Privy viem account
-  const privy = new PrivyClient(appId, appSecret);
-  const account = await createViemAccount({
+  const privy = new PrivyClient({ appId, appSecret });
+  const account = createViemAccount(privy, {
     walletId,
     address: walletAddress as Hex,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    privy: privy as any,
   });
 
   const walletClient = createWalletClient({

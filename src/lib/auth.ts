@@ -23,8 +23,11 @@ export async function authenticateRequest(
   const token = authHeader.slice(7);
 
   try {
-    const verifiedClaims = await getPrivyClient().verifyAuthToken(token);
-    const privyUserId = verifiedClaims.userId;
+    const verifiedClaims = await getPrivyClient()
+      .utils()
+      .auth()
+      .verifyAccessToken(token);
+    const privyUserId = verifiedClaims.user_id;
 
     const supabase = createServiceClient();
     const { data: user } = (await supabase
