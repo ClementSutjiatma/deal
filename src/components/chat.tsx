@@ -6,7 +6,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import { createClient } from "@/lib/supabase/client";
-import { Send, Paperclip, X } from "lucide-react";
+import { Send, Paperclip, X, FileText } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
 import { TransferPrompt } from "@/components/transfer-prompt";
 import { ReceiptPrompt } from "@/components/receipt-prompt";
@@ -407,7 +407,9 @@ function ChatInner({
   // Clean up previews on unmount
   useEffect(() => {
     return () => {
-      previews.forEach((url) => URL.revokeObjectURL(url));
+      previews.forEach((url) => {
+        if (!url.startsWith("pdf:")) URL.revokeObjectURL(url);
+      });
     };
   }, [previews]);
 
@@ -421,7 +423,9 @@ function ChatInner({
     setPendingFiles((prev) => [...prev, ...newFiles].slice(0, 4));
     setPreviews((prev) => [
       ...prev,
-      ...newFiles.map((f) => URL.createObjectURL(f)),
+      ...newFiles.map((f) =>
+        f.type === "application/pdf" ? `pdf:${f.name}` : URL.createObjectURL(f)
+      ),
     ].slice(0, 4));
 
     if (fileInputRef.current) {
@@ -430,7 +434,9 @@ function ChatInner({
   }
 
   function removePendingFile(index: number) {
-    URL.revokeObjectURL(previews[index]);
+    if (!previews[index].startsWith("pdf:")) {
+      URL.revokeObjectURL(previews[index]);
+    }
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
     setPreviews((prev) => prev.filter((_, i) => i !== index));
   }
@@ -467,10 +473,12 @@ function ChatInner({
     // Upload images first (only for authenticated users)
     const mediaUrls = userId ? await uploadFiles() : [];
 
-    const text = input.trim() || (mediaUrls.length > 0 ? "[image]" : "");
+    const text = input.trim() || (mediaUrls.length > 0 ? "[attachment]" : "");
     setInput("");
     setPendingFiles([]);
-    previews.forEach((url) => URL.revokeObjectURL(url));
+    previews.forEach((url) => {
+      if (!url.startsWith("pdf:")) URL.revokeObjectURL(url);
+    });
     setPreviews([]);
 
     if (text) {
@@ -650,16 +658,25 @@ function ChatInner({
         <div ref={bottomRef} />
       </div>
 
-      {/* Pending image previews */}
+      {/* Pending file previews */}
       {previews.length > 0 && (
         <div className="px-4 py-2 border-t border-zinc-100 flex gap-2 overflow-x-auto">
           {previews.map((url, i) => (
             <div key={i} className="relative flex-shrink-0">
-              <img
-                src={url}
-                alt="pending upload"
-                className="w-16 h-16 rounded-lg object-cover border border-zinc-200"
-              />
+              {url.startsWith("pdf:") ? (
+                <div className="w-16 h-16 rounded-lg border border-zinc-200 bg-zinc-50 flex flex-col items-center justify-center gap-0.5">
+                  <FileText className="w-5 h-5 text-red-500" />
+                  <span className="text-[9px] text-zinc-500 truncate max-w-[56px] px-0.5">
+                    {url.slice(4)}
+                  </span>
+                </div>
+              ) : (
+                <img
+                  src={url}
+                  alt="pending upload"
+                  className="w-16 h-16 rounded-lg object-cover border border-zinc-200"
+                />
+              )}
               <button
                 onClick={() => removePendingFile(i)}
                 className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-zinc-800 text-white flex items-center justify-center"
@@ -677,7 +694,7 @@ function ChatInner({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif"
+            accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
             multiple
             className="hidden"
             onChange={handleFileSelect}

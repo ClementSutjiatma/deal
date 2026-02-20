@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, FileText } from "lucide-react";
 import type { Message } from "@/lib/types/database";
 
 interface Props {
@@ -128,14 +128,29 @@ export function ConversationReadView({ dealId, conversationId, buyerName, onBack
                   )}
                   {msg.media_urls && msg.media_urls.length > 0 && (
                     <div className="mt-2 space-y-1">
-                      {msg.media_urls.map((url, i) => (
-                        <img
-                          key={i}
-                          src={url}
-                          alt="attachment"
-                          className="rounded-lg max-w-full max-h-48 object-cover"
-                        />
-                      ))}
+                      {msg.media_urls.map((url, i) =>
+                        url.toLowerCase().endsWith(".pdf") ? (
+                          <a
+                            key={i}
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/50 border border-zinc-200 hover:bg-zinc-50 transition-colors"
+                          >
+                            <FileText className="w-4 h-4 text-red-500 flex-shrink-0" />
+                            <span className="text-xs text-zinc-600 truncate">
+                              {decodeURIComponent(url.split("/").pop() || "document.pdf")}
+                            </span>
+                          </a>
+                        ) : (
+                          <img
+                            key={i}
+                            src={url}
+                            alt="attachment"
+                            className="rounded-lg max-w-full max-h-48 object-cover"
+                          />
+                        )
+                      )}
                     </div>
                   )}
                 </div>

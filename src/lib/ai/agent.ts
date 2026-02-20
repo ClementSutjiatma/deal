@@ -199,20 +199,30 @@ function buildMergedMessages(context: DealContext): ModelMessage[] {
           ? msg.content
           : `[${roleLabel}${senderName ? ` - ${senderName}` : ""}]: ${msg.content}`;
 
-      // Include images if present
-      const hasImages = msg.media_urls && msg.media_urls.length > 0;
+      // Include media attachments if present
+      const hasMedia = msg.media_urls && msg.media_urls.length > 0;
 
       return {
         role: (msg.role === "ai" ? "assistant" : "user") as
           | "user"
           | "assistant",
-        content: hasImages
+        content: hasMedia
           ? [
               { type: "text" as const, text: textContent },
-              ...msg.media_urls!.map((url) => ({
-                type: "image" as const,
-                image: new URL(url),
-              })),
+              ...msg.media_urls!.map((url) => {
+                const isPdf = url.toLowerCase().endsWith(".pdf");
+                if (isPdf) {
+                  return {
+                    type: "file" as const,
+                    data: new URL(url),
+                    mediaType: "application/pdf" as const,
+                  };
+                }
+                return {
+                  type: "image" as const,
+                  image: new URL(url),
+                };
+              }),
             ]
           : textContent,
       };
@@ -238,27 +248,28 @@ function buildMergedMessages(context: DealContext): ModelMessage[] {
               .map((p) => p.text)
               .join("\n");
 
-      const lastImages =
+      const lastMedia =
         typeof last.content === "string"
           ? []
           : (last.content as Array<{ type: string }>).filter(
-              (p) => p.type === "image"
+              (p) => p.type === "image" || p.type === "file"
             );
-      const msgImages =
+      const msgMedia =
         typeof msg.content === "string"
           ? []
           : (msg.content as Array<{ type: string }>).filter(
-              (p) => p.type === "image"
+              (p) => p.type === "image" || p.type === "file"
             );
-      const allImages = [...lastImages, ...msgImages];
+      const allMedia = [...lastMedia, ...msgMedia];
 
       mergedMessages[mergedMessages.length - 1] = {
         role: last.role,
         content:
-          allImages.length > 0
+          allMedia.length > 0
             ? [
                 { type: "text" as const, text: lastText + "\n" + msgText },
-                ...(allImages as Array<{ type: "image"; image: URL }>),
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                ...(allMedia as any[]),
               ]
             : lastText + "\n" + msgText,
       } as ModelMessage;
