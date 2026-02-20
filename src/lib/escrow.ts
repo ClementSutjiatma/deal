@@ -95,24 +95,73 @@ export async function triggerAutoRelease(dealUuid: string): Promise<string> {
 
 /**
  * Send a gas-sponsored transaction from a user's embedded wallet.
- * Uses Privy's walletApi server-side so the user doesn't need ETH.
+ * Uses Privy's walletApi.rpc() server-side so the user doesn't need ETH.
+ *
+ * Note: We use the deprecated rpc() method instead of ethereum.sendTransaction()
+ * because the newer method drops `transactionId` from the response. With gas
+ * sponsorship, the tx hash is empty until on-chain confirmation, so we need
+ * the transactionId to poll for status.
  */
 async function sponsoredSendTransaction(
   walletId: string,
   to: Address,
   data: `0x${string}`
-): Promise<string> {
+): Promise<{ transactionId: string; hash: string }> {
   const privy = getPrivyClient();
-  const caip2 = `eip155:${chain.id}` as const;
+  const caip2 = `eip155:${chain.id}`;
 
-  const response = await (privy as any).walletApi.ethereum.sendTransaction({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const response = await (privy as any).walletApi.rpc({
     walletId,
+    method: "eth_sendTransaction",
     caip2,
     sponsor: true,
-    transaction: { to, data },
+    params: { transaction: { to, data } },
   });
 
-  return response.hash;
+  return {
+    transactionId: response.data.transactionId,
+    hash: response.data.hash,
+  };
+}
+
+/**
+ * Poll Privy's transaction API until a gas-sponsored transaction is confirmed.
+ * Returns the real on-chain transaction hash once available.
+ */
+async function waitForSponsoredTransaction(
+  transactionId: string,
+  maxAttempts = 60,
+  intervalMs = 2000
+): Promise<string> {
+  const privy = getPrivyClient();
+
+  for (let i = 0; i < maxAttempts; i++) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tx = await (privy as any).walletApi.getTransaction({
+      id: transactionId,
+    });
+
+    switch (tx.status) {
+      case "confirmed":
+        return tx.transactionHash;
+      case "execution_reverted":
+        throw new Error(
+          `Transaction reverted (txId: ${transactionId}, hash: ${tx.transactionHash})`
+        );
+      case "failed":
+        throw new Error(`Transaction failed (txId: ${transactionId})`);
+      case "replaced":
+        throw new Error(`Transaction replaced (txId: ${transactionId})`);
+    }
+
+    // Still 'broadcasted' or 'delayed' — keep polling
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  throw new Error(
+    `Transaction not confirmed after ${(maxAttempts * intervalMs) / 1000}s (txId: ${transactionId})`
+  );
 }
 
 export async function sponsoredApproveAndDeposit(
@@ -131,17 +180,20 @@ export async function sponsoredApproveAndDeposit(
     confirmDeadlineSeconds
   );
 
+  // Step 1: Approve USDC spend and wait for on-chain confirmation
   const approveData = encodeFunctionData({
     abi: ERC20_ABI,
     functionName: "approve",
     args: [escrowAddress, params.amount],
   });
-  await sponsoredSendTransaction(buyerWalletId, usdcAddress, approveData);
+  const approveResult = await sponsoredSendTransaction(
+    buyerWalletId,
+    usdcAddress,
+    approveData
+  );
+  await waitForSponsoredTransaction(approveResult.transactionId);
 
-  const publicClient = getPublicClient();
-  // Small delay to ensure approve is indexed
-  await new Promise((r) => setTimeout(r, 2000));
-
+  // Step 2: Deposit into escrow and wait for on-chain confirmation
   const depositData = encodeFunctionData({
     abi: ESCROW_ABI,
     functionName: "deposit",
@@ -153,15 +205,16 @@ export async function sponsoredApproveAndDeposit(
       params.confirmDeadline,
     ],
   });
-  const hash = await sponsoredSendTransaction(
+  const depositResult = await sponsoredSendTransaction(
     buyerWalletId,
     escrowAddress,
     depositData
   );
+  const depositHash = await waitForSponsoredTransaction(
+    depositResult.transactionId
+  );
 
-  // Wait for on-chain confirmation
-  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
-  return hash;
+  return depositHash;
 }
 
 export async function sponsoredMarkTransferred(
@@ -174,10 +227,8 @@ export async function sponsoredMarkTransferred(
     functionName: "markTransferred",
     args: [dealId],
   });
-  const hash = await sponsoredSendTransaction(sellerWalletId, escrowAddress, data);
-  const publicClient = getPublicClient();
-  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
-  return hash;
+  const result = await sponsoredSendTransaction(sellerWalletId, escrowAddress, data);
+  return waitForSponsoredTransaction(result.transactionId);
 }
 
 export async function sponsoredConfirm(
@@ -190,10 +241,8 @@ export async function sponsoredConfirm(
     functionName: "confirm",
     args: [dealId],
   });
-  const hash = await sponsoredSendTransaction(buyerWalletId, escrowAddress, data);
-  const publicClient = getPublicClient();
-  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
-  return hash;
+  const result = await sponsoredSendTransaction(buyerWalletId, escrowAddress, data);
+  return waitForSponsoredTransaction(result.transactionId);
 }
 
 export async function sponsoredDispute(
@@ -206,10 +255,8 @@ export async function sponsoredDispute(
     functionName: "dispute",
     args: [dealId],
   });
-  const hash = await sponsoredSendTransaction(buyerWalletId, escrowAddress, data);
-  const publicClient = getPublicClient();
-  await publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
-  return hash;
+  const result = await sponsoredSendTransaction(buyerWalletId, escrowAddress, data);
+  return waitForSponsoredTransaction(result.transactionId);
 }
 
 export async function getDealOnChain(dealUuid: string) {
