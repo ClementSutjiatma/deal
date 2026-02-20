@@ -4,7 +4,7 @@ import { authenticateRequest } from "@/lib/auth";
 import { streamDealChat } from "@/lib/ai/agent";
 import type { DealContext } from "@/lib/ai/agent";
 import { CHAT_MODES } from "@/lib/constants";
-import { convertToModelMessages, type UIMessage } from "ai";
+import type { UIMessage } from "ai";
 
 export async function POST(
   request: NextRequest,
@@ -205,7 +205,7 @@ export async function POST(
   };
 
   // Stream AI response with tools
-  const result = streamDealChat(context, async ({ text }) => {
+  const result = streamDealChat(context, async ({ text, toolCalls }) => {
     // onFinish: persist AI message and handle commands
 
     // Extract command from text
@@ -217,11 +217,34 @@ export async function POST(
       .replace(/<command>.*?<\/command>/g, "")
       .trim();
 
-    // Determine deposit amount from command
+    // Determine deposit amount from command or tool calls
     let depositRequestCents: number | null = null;
     if (command?.startsWith("PRICE_ACCEPTED:")) {
       const cents = parseInt(command.split(":")[1], 10);
       if (!isNaN(cents)) depositRequestCents = cents;
+    }
+
+    // Check tool calls for structured data
+    let transferMethodFromTool: string | null = null;
+    let receiptMethodFromTool: string | null = null;
+
+    if (toolCalls) {
+      for (const tc of toolCalls) {
+        if (tc.toolName === "requestDeposit") {
+          const input = tc.input as { amount_cents?: number };
+          if (input.amount_cents && !depositRequestCents) {
+            depositRequestCents = input.amount_cents;
+          }
+        }
+        if (tc.toolName === "confirmTransfer") {
+          const input = tc.input as { transfer_method?: string };
+          transferMethodFromTool = input.transfer_method || deal.transfer_method || "TBD";
+        }
+        if (tc.toolName === "confirmReceipt") {
+          const input = tc.input as { transfer_method?: string };
+          receiptMethodFromTool = input.transfer_method || deal.transfer_method || "TBD";
+        }
+      }
     }
 
     // Handle PRICE_ACCEPTED — update deal terms
@@ -235,12 +258,20 @@ export async function POST(
         .eq("id", dealId);
     }
 
-    // Only insert AI message if there's actual content or a deposit request.
-    // Tool-only responses produce empty text —
-    // storing these as empty messages breaks the conversation history.
-    // But we do want to store a placeholder if a meaningful tool was called.
-    const hasContent = !!cleanContent || !!depositRequestCents;
+    // Build metadata object with all tool call data
+    const metadata: Record<string, unknown> = {};
+    if (depositRequestCents) metadata.deposit_request_cents = depositRequestCents;
+    if (transferMethodFromTool) metadata.transfer_method = transferMethodFromTool;
+    if (receiptMethodFromTool) metadata.receipt_method = receiptMethodFromTool;
+
+    // Only insert AI message if there's actual content or tool calls
+    const hasContent = !!cleanContent || !!depositRequestCents || !!transferMethodFromTool || !!receiptMethodFromTool;
     if (hasContent) {
+      const contentToStore = cleanContent
+        || (depositRequestCents ? `Deposit requested: $${(depositRequestCents / 100).toFixed(2)}` : "")
+        || (transferMethodFromTool ? "Transfer confirmation requested" : "")
+        || (receiptMethodFromTool ? "Receipt confirmation requested" : "");
+
       await (supabase
         .from("messages") as any)
         .insert({
@@ -248,16 +279,14 @@ export async function POST(
           sender_id: null,
           conversation_id: resolvedConversationId,
           role: "ai",
-          content: cleanContent || `Deposit requested: $${(depositRequestCents! / 100).toFixed(2)}`,
+          content: contentToStore,
           visibility,
-          metadata: depositRequestCents
-            ? { deposit_request_cents: depositRequestCents }
-            : null,
+          metadata: Object.keys(metadata).length > 0 ? metadata : null,
         });
 
       // Update conversation metadata
       if (resolvedConversationId) {
-        const preview = (cleanContent || `Deposit: $${(depositRequestCents! / 100).toFixed(2)}`).slice(0, 100);
+        const preview = (cleanContent || contentToStore).slice(0, 100);
         await (supabase
           .from("conversations") as any)
           .update({

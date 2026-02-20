@@ -1,5 +1,5 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { generateText, streamText, stepCountIs, type ModelMessage } from "ai";
+import { streamText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
 import { dealChatTools } from "./tools";
 
@@ -280,9 +280,14 @@ function buildMergedMessages(context: DealContext): ModelMessage[] {
 
 // ─── Deal chat (streaming, with tools) ────────────────────────────────
 
+interface StreamFinishEvent {
+  text: string;
+  toolCalls?: Array<{ toolName: string; input: unknown }>;
+}
+
 export function streamDealChat(
   context: DealContext,
-  onFinish?: (event: { text: string }) => void | Promise<void>,
+  onFinish?: (event: StreamFinishEvent) => void | Promise<void>,
 ) {
   const systemPrompt = buildDealChatPrompt(context);
   const mergedMessages = buildMergedMessages(context);
@@ -299,69 +304,17 @@ export function streamDealChat(
     stopWhen: stepCountIs(3),
     onFinish: onFinish
       ? async (event) => {
-          await onFinish({ text: event.text });
+          // Collect all tool calls from all steps
+          const allToolCalls: Array<{ toolName: string; input: unknown }> = [];
+          for (const step of event.steps) {
+            for (const tc of step.staticToolCalls) {
+              allToolCalls.push({ toolName: tc.toolName, input: tc.input });
+            }
+          }
+          await onFinish({ text: event.text, toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined });
         }
       : undefined,
   });
-}
-
-// ─── Deal chat (non-streaming, legacy) ────────────────────────────────
-
-export async function getAIResponse(
-  context: DealContext
-): Promise<{ content: string; command: string | null; depositRequestCents: number | null }> {
-  const systemPrompt = buildDealChatPrompt(context);
-  const mergedMessages = buildMergedMessages(context);
-
-  const result = await generateText({
-    model: anthropic("claude-sonnet-4-5-20250929"),
-    system: systemPrompt,
-    messages: mergedMessages,
-    tools: {
-      ...dealChatTools,
-      web_search: webSearchTool,
-    },
-    maxOutputTokens: 1024,
-    stopWhen: stepCountIs(3),
-  });
-
-  const text = result.text;
-
-  // Extract command if present
-  const commandMatch = text.match(/<command>(.*?)<\/command>/);
-  const command = commandMatch ? commandMatch[1] : null;
-
-  // Extract deposit request from tool calls or XML tag
-  let depositRequestCents: number | null = null;
-  const depositMatch = text.match(/<deposit_request\s+amount_cents="(\d+)"\s*\/>/);
-  if (depositMatch) {
-    depositRequestCents = parseInt(depositMatch[1], 10);
-  }
-
-  // Also check tool calls for requestDeposit
-  for (const step of result.steps) {
-    for (const toolCall of step.staticToolCalls) {
-      if (toolCall.toolName === "requestDeposit") {
-        const input = toolCall.input as { amount_cents?: number };
-        if (input.amount_cents) {
-          depositRequestCents = input.amount_cents;
-        }
-      }
-    }
-  }
-
-  // Backend fallback: derive depositRequestCents from PRICE_ACCEPTED command
-  if (!depositRequestCents && command?.startsWith("PRICE_ACCEPTED:")) {
-    const cents = parseInt(command.split(":")[1], 10);
-    if (!isNaN(cents)) depositRequestCents = cents;
-  }
-
-  const content = text
-    .replace(/<command>.*?<\/command>/g, "")
-    .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
-    .trim();
-
-  return { content, command, depositRequestCents };
 }
 
 // ─── Sell chat (streaming, returns streamText result) ────────────────
@@ -397,49 +350,4 @@ export function streamDealCreation(
         }
       : undefined,
   });
-}
-
-// ─── Legacy non-streaming sell chat (keep for compatibility) ─────────
-
-export async function getDealCreationResponse(
-  messages: Array<{ role: "user" | "assistant"; content: string }>
-): Promise<{ content: string; dealData: Record<string, unknown> | null }> {
-  const systemPrompt = buildDealCreationPrompt();
-
-  const apiMessages = (
-    messages.length > 0 && messages[0].role === "user"
-      ? messages
-      : [
-          { role: "user" as const, content: "Hi, I want to sell tickets." },
-          ...messages,
-        ]
-  ) as ModelMessage[];
-
-  const result = await generateText({
-    model: anthropic("claude-sonnet-4-5-20250929"),
-    system: systemPrompt,
-    messages: apiMessages,
-    tools: {
-      web_search: webSearchTool,
-    },
-    stopWhen: stepCountIs(3),
-    maxOutputTokens: 1024,
-  });
-
-  const text = result.text;
-
-  // Extract deal data if present
-  const dealDataMatch = text.match(/<deal_data>([\s\S]*?)<\/deal_data>/);
-  let dealData: Record<string, unknown> | null = null;
-  if (dealDataMatch) {
-    try {
-      dealData = JSON.parse(dealDataMatch[1]);
-    } catch {
-      dealData = null;
-    }
-  }
-
-  const content = text.replace(/<deal_data>[\s\S]*?<\/deal_data>/g, "").trim();
-
-  return { content, dealData };
 }

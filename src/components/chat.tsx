@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
@@ -46,12 +46,14 @@ interface Props {
 function dbMessageToUIMessage(msg: Message): UIMessage {
   const meta = msg.metadata as Record<string, unknown> | null;
   const depositCents = meta?.deposit_request_cents as number | undefined;
+  const transferMethod = meta?.transfer_method as string | undefined;
+  const receiptMethod = meta?.receipt_method as string | undefined;
 
   // Build parts array
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const parts: any[] = [];
 
-  // Clean deposit tags from content for display
+  // Clean tags from content for display
   const cleanContent = msg.content
     .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
     .replace(/<command>.*?<\/command>/g, "")
@@ -61,15 +63,35 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
     parts.push({ type: "text", text: cleanContent });
   }
 
-  // If this AI message had a deposit request, add a tool part
-  if (msg.role === "ai" && depositCents) {
-    parts.push({
-      type: "tool-requestDeposit",
-      toolCallId: `legacy-${msg.id}`,
-      state: "output-available",
-      input: { amount_cents: depositCents },
-      output: { amount_cents: depositCents },
-    });
+  // AI message tool parts: reconstruct from metadata
+  if (msg.role === "ai") {
+    if (depositCents) {
+      parts.push({
+        type: "tool-requestDeposit",
+        toolCallId: `db-deposit-${msg.id}`,
+        state: "output-available",
+        input: { amount_cents: depositCents },
+        output: { amount_cents: depositCents },
+      });
+    }
+    if (transferMethod) {
+      parts.push({
+        type: "tool-confirmTransfer",
+        toolCallId: `db-transfer-${msg.id}`,
+        state: "output-available",
+        input: { transfer_method: transferMethod },
+        output: { transfer_method: transferMethod },
+      });
+    }
+    if (receiptMethod) {
+      parts.push({
+        type: "tool-confirmReceipt",
+        toolCallId: `db-receipt-${msg.id}`,
+        state: "output-available",
+        input: { transfer_method: receiptMethod },
+        output: { transfer_method: receiptMethod },
+      });
+    }
   }
 
   return {
@@ -109,8 +131,9 @@ export function Chat({
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
-  const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null);
+  const [initialMessages, setInitialMessages] = useState<UIMessage[] | undefined>(undefined);
   const [realtimeMessages, setRealtimeMessages] = useState<Message[]>([]);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supabase = createClient();
@@ -119,8 +142,6 @@ export function Chat({
   const knownMsgIds = useRef(new Set<string>());
 
   // Build transport only when we have what we need.
-  // IMPORTANT: Buyers must have a conversationId before sending messages,
-  // otherwise the server creates a new conversation and loses history.
   const transport = useMemo(() => {
     if (!accessToken && !anonymousId) return null;
     // Buyers need a conversationId to avoid creating duplicate conversations
@@ -136,8 +157,10 @@ export function Chat({
     });
   }, [dealId, accessToken, conversationId, anonymousId, userRole]);
 
-  // Fetch initial messages from Supabase
+  // Fetch initial messages from Supabase (GET-only — no legacy POST)
   useEffect(() => {
+    let cancelled = false;
+
     async function fetchMessages() {
       if (userRole === "buyer" && !conversationId) return;
 
@@ -150,55 +173,65 @@ export function Chat({
         headers["Authorization"] = `Bearer ${token}`;
       }
 
-      const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
-      if (res.ok) {
-        const data: Message[] = await res.json();
+      try {
+        const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
+        if (cancelled) return;
 
-        // Convert to UIMessages
-        const uiMsgs = data.map(dbMessageToUIMessage);
-        setInitialMessages(uiMsgs);
+        if (res.ok) {
+          const data: Message[] = await res.json();
 
-        // Track IDs
-        data.forEach((m) => knownMsgIds.current.add(m.id));
+          // Convert to UIMessages
+          const uiMsgs = data.map(dbMessageToUIMessage);
+          setInitialMessages(uiMsgs.length > 0 ? uiMsgs : undefined);
 
-        // Check for deposit requests in existing messages
-        if (onDepositRequest) {
-          for (const msg of data) {
-            const meta = msg.metadata as Record<string, unknown> | null;
-            if (meta?.deposit_request_cents) {
-              onDepositRequest(meta.deposit_request_cents as number);
+          // Track IDs
+          data.forEach((m) => knownMsgIds.current.add(m.id));
+
+          // Check for deposit requests in existing messages
+          if (onDepositRequest) {
+            for (const msg of data) {
+              const meta = msg.metadata as Record<string, unknown> | null;
+              if (meta?.deposit_request_cents) {
+                onDepositRequest(meta.deposit_request_cents as number);
+              }
             }
           }
+        } else {
+          setInitialMessages(undefined);
         }
-      } else {
-        setInitialMessages([]);
+      } catch {
+        if (!cancelled) setInitialMessages(undefined);
+      } finally {
+        if (!cancelled) setIsLoadingMessages(false);
       }
     }
     fetchMessages();
+
+    return () => { cancelled = true; };
   }, [dealId, userId, conversationId, accessToken, dealStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // useChat for streaming AI responses
-  const chatOptions = useMemo(() => ({
-    ...(transport ? { transport } : {}),
-    ...(initialMessages ? { messages: initialMessages } : {}),
-    onFinish: ({ message }: { message: UIMessage }) => {
-      // Check for deposit tool parts in the finished message
-      if (onDepositRequest) {
-        for (const part of message.parts) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const p = part as any;
-          if (
-            p.type === "tool-requestDeposit" &&
-            p.state === "output-available"
-          ) {
-            onDepositRequest(p.output.amount_cents);
-          }
+  // onFinish handler for useChat — check for tool parts
+  const handleFinish = useCallback(({ message }: { message: UIMessage }) => {
+    if (onDepositRequest) {
+      for (const part of message.parts) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const p = part as any;
+        if (
+          p.type === "tool-requestDeposit" &&
+          p.state === "output-available"
+        ) {
+          onDepositRequest(p.output.amount_cents);
         }
       }
-    },
-  }), [transport, initialMessages]); // eslint-disable-line react-hooks/exhaustive-deps
+    }
+  }, [onDepositRequest]);
 
-  const { messages: aiMessages, sendMessage, status } = useChat(chatOptions);
+  // useChat for streaming AI responses
+  const { messages: aiMessages, sendMessage, status } = useChat({
+    ...(transport ? { transport } : {}),
+    ...(initialMessages ? { messages: initialMessages } : {}),
+    onFinish: handleFinish,
+  });
 
   const isStreaming = status === "streaming" || status === "submitted";
 
@@ -225,19 +258,10 @@ export function Chat({
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
 
-          // Skip AI messages that came through useChat streaming (they're already in aiMessages).
-          // But ALLOW server-inserted AI messages (e.g. deposit confirmation, system messages)
-          // which don't come through the stream. We can tell by checking a short delay —
-          // if the message appears while we're NOT streaming, it's server-inserted.
+          // AI messages: always allow through realtime (dedup in merge step)
+          // Server-inserted AI messages (deposit confirmation, system messages)
+          // don't come through the useChat stream, so they need realtime.
           if (newMsg.role === "ai") {
-            // For the current user who triggered the AI response via chat,
-            // the streaming response is already in aiMessages. Skip to avoid duplicates.
-            // But for the OTHER party (e.g. seller viewing chat after buyer deposits),
-            // these server-inserted AI messages need to show up.
-            // Simple heuristic: if this user's role matches the current chat stream user,
-            // skip (the streaming response handles it). Otherwise, allow it through.
-            // Actually, the safest approach: always allow AI messages through realtime
-            // and deduplicate in the merge step below.
             knownMsgIds.current.add(newMsg.id);
             setRealtimeMessages((prev) => {
               if (prev.some((m) => m.id === newMsg.id)) return prev;
@@ -401,7 +425,7 @@ export function Chat({
   }
 
   // Show loading spinner until initial messages are loaded
-  if (initialMessages === null) {
+  if (isLoadingMessages) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
