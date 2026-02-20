@@ -85,31 +85,23 @@ export function UserMenu() {
     }
   }, [open]);
 
-  // Fetch seller deals
+  // Fetch deals when user logs in, and refetch every time the dropdown opens
   useEffect(() => {
     if (!user?.id) {
       setSellerDeals([]);
-      return;
-    }
-    async function fetchSellerDeals() {
-      const res = await fetch(`/api/deals/seller?seller_id=${user!.id}`);
-      if (res.ok) setSellerDeals(await res.json());
-    }
-    fetchSellerDeals();
-  }, [user?.id]);
-
-  // Fetch buyer deals (deals they're following via conversations)
-  useEffect(() => {
-    if (!user?.id) {
       setBuyerDeals([]);
       return;
     }
-    async function fetchBuyerDeals() {
-      const res = await fetch(`/api/deals/buyer?buyer_id=${user!.id}`);
-      if (res.ok) setBuyerDeals(await res.json());
+    async function fetchDeals() {
+      const [sellerRes, buyerRes] = await Promise.all([
+        fetch(`/api/deals/seller?seller_id=${user!.id}`),
+        fetch(`/api/deals/buyer?buyer_id=${user!.id}`),
+      ]);
+      if (sellerRes.ok) setSellerDeals(await sellerRes.json());
+      if (buyerRes.ok) setBuyerDeals(await buyerRes.json());
     }
-    fetchBuyerDeals();
-  }, [user?.id]);
+    fetchDeals();
+  }, [user?.id, open]); // refetch when dropdown opens
 
   if (!ready) return null;
 
