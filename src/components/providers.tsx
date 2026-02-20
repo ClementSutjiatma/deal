@@ -73,7 +73,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID || ""}
       clientId={process.env.NEXT_PUBLIC_PRIVY_CLIENT_ID || undefined}
       config={{
-        loginMethods: ["sms", "email"],
+        loginMethods: ["sms", "email", "passkey"],
         appearance: {
           theme: "light",
           accentColor: "#f97316",
