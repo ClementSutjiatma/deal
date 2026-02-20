@@ -4,7 +4,7 @@ import { authenticateRequest } from "@/lib/auth";
 import { getEmbeddedWalletId } from "@/lib/privy";
 import { sponsoredApproveAndDeposit } from "@/lib/escrow";
 import { notifyDeposit } from "@/lib/twilio";
-import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, MAX_DISCOUNT_FRACTION, CONVERSATION_STATUSES } from "@/lib/constants";
+import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, CONVERSATION_STATUSES } from "@/lib/constants";
 import type { Address } from "viem";
 
 export async function POST(
@@ -51,7 +51,9 @@ export async function POST(
     return NextResponse.json({ error: "Buyer wallet not configured" }, { status: 400 });
   }
 
-  // Determine price: use negotiated price from conversation if available
+  // Determine price: use negotiated price from conversation if available.
+  // The seller sets a MINIMUM price (deal.price_cents). Buyers offer at or above it.
+  // The negotiated price can be higher than the listed minimum — that's expected.
   let priceCents = deal.price_cents;
 
   if (conversation_id) {
@@ -62,8 +64,8 @@ export async function POST(
       .single() as { data: any };
 
     if (conv?.negotiated_price_cents) {
-      const minPrice = Math.round(deal.price_cents * (1 - MAX_DISCOUNT_FRACTION));
-      if (conv.negotiated_price_cents >= minPrice && conv.negotiated_price_cents <= deal.price_cents) {
+      // Accept any negotiated price >= seller's minimum price
+      if (conv.negotiated_price_cents >= deal.price_cents) {
         priceCents = conv.negotiated_price_cents;
       }
     }
