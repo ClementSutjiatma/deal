@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { authenticateRequest } from "@/lib/auth";
 import { adjudicateDispute } from "@/lib/ai/agent";
 import { resolveDisputeOnChain } from "@/lib/escrow";
 import { notifyDisputeResolved } from "@/lib/twilio";
@@ -9,35 +10,48 @@ import type { Message } from "@/lib/types/database";
 /**
  * POST /api/deals/[id]/adjudicate
  *
- * Server-side-only route that triggers AI adjudication.
- * Called internally when both parties have completed 5 evidence questions,
- * or by the cron job when a dispute times out.
- *
- * Fetches ALL dispute messages (both buyer_only and seller_only),
- * feeds them to the AI for a ruling, then auto-executes on-chain.
+ * Triggers AI adjudication for a disputed deal.
+ * Can be called by:
+ *   1. Internal secret (from cron or server-side)
+ *   2. Admin API key (manual)
+ *   3. Authenticated deal participant (buyer/seller) — client-side fallback
+ *      when both parties have completed evidence collection.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  // Verify internal secret to prevent unauthorized access
+  const { id } = await params;
+  const supabase = createServiceClient();
+
+  // Check internal/admin auth
   const secret = request.headers.get("x-internal-secret");
   const expectedSecret = process.env.INTERNAL_API_SECRET;
-
-  // Also allow ADMIN_API_KEY for manual trigger
   const adminKey = request.headers.get("x-admin-api-key");
   const expectedAdminKey = process.env.ADMIN_API_KEY;
 
-  const isAuthorized =
+  let isAuthorized =
     (expectedSecret && secret === expectedSecret) ||
     (expectedAdminKey && adminKey === expectedAdminKey);
+
+  // Also allow authenticated deal participants (buyer or seller)
+  if (!isAuthorized) {
+    const auth = await authenticateRequest(request);
+    if (auth?.user.id) {
+      // Verify they're a party to this deal
+      const { data: dealCheck } = await (supabase.from("deals") as any)
+        .select("seller_id, buyer_id")
+        .eq("id", id)
+        .single() as { data: any };
+      if (dealCheck && (auth.user.id === dealCheck.seller_id || auth.user.id === dealCheck.buyer_id)) {
+        isAuthorized = true;
+      }
+    }
+  }
 
   if (!isAuthorized) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  const { id } = await params;
-  const supabase = createServiceClient();
 
   // Fetch deal
   const { data: deal } = await (supabase
