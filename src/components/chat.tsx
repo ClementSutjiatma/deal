@@ -138,6 +138,8 @@ export function Chat(props: Props) {
   const knownMsgIdsRef = useRef(new Set<string>());
   // Track original DB role (buyer/seller/ai) for each message ID
   const msgRolesRef = useRef(new Map<string, string>());
+  // Track created_at timestamps for correct ordering
+  const msgTimestampsRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     let cancelled = false;
@@ -168,10 +170,11 @@ export function Chat(props: Props) {
           const data: Message[] = await res.json();
           const uiMsgs = data.map(dbMessageToUIMessage);
 
-          // Track known IDs for deduplication and original roles
+          // Track known IDs for deduplication, original roles, and timestamps
           data.forEach((m) => {
             knownMsgIdsRef.current.add(m.id);
             msgRolesRef.current.set(m.id, m.role);
+            msgTimestampsRef.current.set(m.id, m.created_at);
           });
 
           // Extract deposit requests from messages
@@ -221,6 +224,7 @@ export function Chat(props: Props) {
       initialMessages={initialMessages || undefined}
       knownMsgIds={knownMsgIdsRef}
       msgRoles={msgRolesRef}
+      msgTimestamps={msgTimestampsRef}
     />
   );
 }
@@ -231,6 +235,7 @@ interface InnerProps extends Props {
   initialMessages?: UIMessage[];
   knownMsgIds: React.RefObject<Set<string>>;
   msgRoles: React.RefObject<Map<string, string>>;
+  msgTimestamps: React.RefObject<Map<string, string>>;
 }
 
 function ChatInner({
@@ -261,6 +266,7 @@ function ChatInner({
   initialMessages,
   knownMsgIds,
   msgRoles,
+  msgTimestamps,
 }: InnerProps) {
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -332,8 +338,9 @@ function ChatInner({
         (payload) => {
           const newMsg = payload.new as Message;
 
-          // Track original DB role for rendering
+          // Track original DB role and timestamp for rendering/ordering
           msgRoles.current.set(newMsg.id, newMsg.role);
+          msgTimestamps.current.set(newMsg.id, newMsg.created_at);
 
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
@@ -404,7 +411,7 @@ function ChatInner({
     };
   }, [dealId, conversationId, userId, userRole, chatMode, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Merge useChat messages with realtime messages from other users
+  // Merge useChat messages with realtime messages from other users, sorted by timestamp
   const allMessages = useMemo(() => {
     const realtimeUIMsgs: UIMessage[] = realtimeMessages
       .filter((m) => !aiMessages.some((ai) => ai.id === m.id))
@@ -417,8 +424,23 @@ function ChatInner({
       }
     }
 
+    // Sort by created_at timestamp. Messages without a known timestamp
+    // (e.g. optimistic useChat messages) keep their relative position
+    // by getting a timestamp slightly after the previous known message.
+    combined.sort((a, b) => {
+      const tsA = msgTimestamps.current.get(a.id);
+      const tsB = msgTimestamps.current.get(b.id);
+      // Both have timestamps — sort chronologically
+      if (tsA && tsB) return tsA.localeCompare(tsB);
+      // Neither has timestamps — preserve original order (stable sort)
+      if (!tsA && !tsB) return 0;
+      // Only one has a timestamp — the one without is newer (optimistic)
+      if (!tsA) return 1;
+      return -1;
+    });
+
     return combined;
-  }, [aiMessages, realtimeMessages]);
+  }, [aiMessages, realtimeMessages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Find the last tool message IDs for isLatest tracking
   const { lastDepositMsgId, lastTransferMsgId, lastReceiptMsgId } = useMemo(() => {
