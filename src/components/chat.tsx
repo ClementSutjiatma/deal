@@ -66,6 +66,13 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
     parts.push({ type: "text", text: cleanContent });
   }
 
+  // Add image parts from media_urls
+  if (msg.media_urls && msg.media_urls.length > 0) {
+    for (const url of msg.media_urls) {
+      parts.push({ type: "file", mediaType: "image/jpeg", url });
+    }
+  }
+
   // AI message tool parts: reconstruct from metadata
   if (msg.role === "ai") {
     if (depositCents) {
@@ -499,10 +506,10 @@ function ChatInner({
     setPreviews((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function uploadFiles(): Promise<string[]> {
+  async function uploadFilesWithMeta(): Promise<{ url: string; mediaType: string }[]> {
     if (pendingFiles.length === 0) return [];
 
-    const urls: string[] = [];
+    const results: { url: string; mediaType: string }[] = [];
     for (const file of pendingFiles) {
       const ext = file.name.split(".").pop() || "jpg";
       const path = `${dealId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -515,10 +522,13 @@ function ChatInner({
         const { data: urlData } = supabase.storage
           .from("deal-evidence")
           .getPublicUrl(path);
-        urls.push(urlData.publicUrl);
+        results.push({
+          url: urlData.publicUrl,
+          mediaType: file.type || "image/jpeg",
+        });
       }
     }
-    return urls;
+    return results;
   }
 
   // Can send if: has a role AND (seller OR has conversationId for buyers)
@@ -528,17 +538,27 @@ function ChatInner({
     e.preventDefault();
     if ((!input.trim() && pendingFiles.length === 0) || !canSend || isStreaming) return;
 
-    // Upload images first (only for authenticated users)
-    const mediaUrls = userId ? await uploadFiles() : [];
+    // Upload images to Supabase first (only for authenticated users)
+    const uploadedFiles = userId ? await uploadFilesWithMeta() : [];
 
-    const text = input.trim() || (mediaUrls.length > 0 ? "[image]" : "");
+    const text = input.trim() || (uploadedFiles.length > 0 ? "[image]" : "");
     setInput("");
     setPendingFiles([]);
     previews.forEach((url) => URL.revokeObjectURL(url));
     setPreviews([]);
 
-    if (text) {
-      await sendMessage({ text });
+    if (text || uploadedFiles.length > 0) {
+      // Convert uploaded URLs to FileUIPart format for AI SDK
+      const fileParts = uploadedFiles.map(({ url, mediaType }) => ({
+        type: "file" as const,
+        mediaType,
+        url,
+      }));
+
+      await sendMessage({
+        text: text || "[image]",
+        ...(fileParts.length > 0 ? { files: fileParts } : {}),
+      });
     }
   }
 
@@ -589,6 +609,24 @@ function ChatInner({
                       .trim();
                     if (!cleanText) return null;
                     return <MarkdownText key={i}>{cleanText}</MarkdownText>;
+                  }
+
+                  // File/image parts (from DB media_urls or AI SDK FileUIPart)
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const fp = part as any;
+                  if (fp.type === "file" && fp.url) {
+                    const mediaType: string = fp.mediaType || "";
+                    if (mediaType.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp)$/i.test(fp.url)) {
+                      return (
+                        <img
+                          key={i}
+                          src={fp.url}
+                          alt="Uploaded image"
+                          className="mt-2 rounded-lg max-w-full max-h-64 object-contain cursor-pointer"
+                          onClick={() => window.open(fp.url, "_blank")}
+                        />
+                      );
+                    }
                   }
 
                   // Tool parts

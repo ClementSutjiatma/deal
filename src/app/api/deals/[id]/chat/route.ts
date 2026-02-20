@@ -32,7 +32,7 @@ export async function POST(
     );
   }
 
-  // Extract the latest user message text
+  // Extract the latest user message text and file URLs
   const lastUserMsg = [...uiMessages].reverse().find((m) => m.role === "user");
   const userContent = lastUserMsg
     ? lastUserMsg.parts
@@ -40,6 +40,11 @@ export async function POST(
         .map((p) => p.text)
         .join("")
     : "";
+  const fileUrls = lastUserMsg
+    ? lastUserMsg.parts
+        .filter((p): p is { type: "file"; url: string; mediaType: string } => p.type === "file" && !!(p as any).url)
+        .map((p) => p.url)
+    : [];
 
   // Fetch deal
   const { data: deal } = await (supabase
@@ -165,6 +170,7 @@ export async function POST(
       role,
       content: userContent || "[message]",
       visibility,
+      media_urls: fileUrls.length > 0 ? fileUrls : null,
     });
 
   // Fetch context for AI (from Supabase, not from UIMessages — Supabase is source of truth)
