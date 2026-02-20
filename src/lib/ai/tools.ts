@@ -98,6 +98,26 @@ export const dealChatTools = {
 };
 
 /**
+ * AI SDK tools for dispute evidence collection.
+ *
+ * Used during dispute chat to signal when evidence gathering is complete.
+ * The AI calls completeEvidenceCollection when it determines it has sufficient
+ * evidence from a party, rather than relying on a hard question counter.
+ */
+export const disputeEvidenceTools = {
+  completeEvidenceCollection: tool({
+    description:
+      "Call when you have gathered sufficient evidence from this party to make a fair ruling. Before calling, ensure you've asked about the core issue, requested screenshot evidence, and followed up on any ambiguities. Do NOT call prematurely — only when you have a clear picture of this party's position.",
+    inputSchema: z.object({
+      summary: z
+        .string()
+        .describe("Brief summary of the key evidence collected from this party"),
+    }),
+    execute: async ({ summary }) => ({ summary }),
+  }),
+};
+
+/**
  * AI SDK tools for dispute adjudication.
  *
  * Used only in the adjudication route (not during evidence collection).

@@ -1,7 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { streamText, generateText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
-import { dealChatTools, dealCreationTools, disputeTools } from "./tools";
+import { dealChatTools, dealCreationTools, disputeTools, disputeEvidenceTools } from "./tools";
 
 export interface DealContext {
   deal: Deal;
@@ -158,23 +158,28 @@ Rules for chat:
   * ALWAYS call the confirmReceipt tool when the buyer first messages after transfer. Don't just tell them to click a button — the tool renders the button.
 - When chat_mode is "dispute": You're collecting evidence privately from ONE party at a time. See DISPUTE MODE below.
 
-DISPUTE MODE — EVIDENCE COLLECTION (5 questions max):
+DISPUTE MODE — EVIDENCE COLLECTION:
 You are collecting evidence from the **${ctx.senderRole}**. This is a PRIVATE conversation — the other party CANNOT see these messages.
 
-Questions asked so far: ${ctx.senderRole === "buyer" ? ctx.deal.dispute_buyer_q : ctx.deal.dispute_seller_q}/5
+Exchanges so far: ${ctx.senderRole === "buyer" ? ctx.deal.dispute_buyer_q : ctx.deal.dispute_seller_q}
 
 Your job is to ask structured questions to understand the ${ctx.senderRole === "buyer" ? "issue" : "seller's side"}:
-- Question 1: What happened? (buyer) / What evidence do you have? (seller)
-- Question 2: Request screenshot evidence (transfer confirmation, ticket details, etc.)
-- Questions 3-5: Follow-up clarifications based on their answers
+1. Ask what happened / what evidence they have
+2. Request screenshot evidence (transfer confirmation, ticket details, etc.)
+3. Follow up on ambiguities or inconsistencies in their answers
+4. When you have a clear, complete picture of their position, call the completeEvidenceCollection tool
 
 Rules:
 - Ask ONE question at a time. Wait for the answer before asking the next.
 - Do NOT issue a ruling — you only see one side. Adjudication happens separately with ALL evidence.
 - Do NOT call the resolveDispute tool — that's only for adjudication.
-- After 5 questions (or if they've provided clear, complete evidence earlier), say: "Thank you for providing your evidence. We'll review both sides and issue a ruling shortly."
+- Use your judgment on when enough evidence has been collected. Simple cases may need 2-3 exchanges. Complex cases may need more.
+- Clarification exchanges (e.g. "what do you mean?") are normal conversation — they don't waste any limit.
+- When you have sufficient evidence, call the completeEvidenceCollection tool with a brief summary of the key evidence.
+- After calling the tool, tell the user: "Your evidence has been submitted. We're now reviewing both sides and will issue a ruling shortly. You'll be notified of the outcome."
 - Be impartial and professional. Don't reveal the other party's claims.
 - Encourage uploading screenshots — they carry more weight than text claims.
+- There is a safety limit of 20 exchanges. If you reach it without calling the tool, evidence collection will close automatically.
 
 When you need to trigger a state change, output one of these commands at the END of your message:
 <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> — when buyer's offer meets or exceeds seller's minimum (replace AMOUNT_CENTS with actual number, e.g. PRICE_ACCEPTED:15000)
@@ -300,11 +305,11 @@ export function streamDealChat(
   const systemPrompt = buildDealChatPrompt(context);
   const mergedMessages = buildMergedMessages(context);
 
-  // In dispute mode, only provide web_search (no deal lifecycle tools).
+  // In dispute mode, provide evidence collection tool + web_search.
   // Dispute tools (resolveDispute) are only used in the adjudication route.
   const isDispute = context.deal.chat_mode === "dispute";
   const tools = isDispute
-    ? { web_search: webSearchTool }
+    ? { ...disputeEvidenceTools, web_search: webSearchTool }
     : { ...dealChatTools, web_search: webSearchTool };
 
   return streamText({

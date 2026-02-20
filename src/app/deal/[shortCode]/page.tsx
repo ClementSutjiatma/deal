@@ -279,10 +279,10 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
   const isConversationClosed = conversationStatus === "closed";
-  // Disable chat input when this party has completed their dispute evidence questions
-  const disputeQuestionsComplete = deal.status === "DISPUTED" && (
-    (isBuyer && (deal as Record<string, unknown>).dispute_buyer_q as number >= 5) ||
-    (isSeller && (deal as Record<string, unknown>).dispute_seller_q as number >= 5)
+  // Disable chat input when this party's evidence collection is done
+  const disputeEvidenceComplete = deal.status === "DISPUTED" && (
+    (isBuyer && (deal as Record<string, unknown>).dispute_buyer_done === true) ||
+    (isSeller && (deal as Record<string, unknown>).dispute_seller_done === true)
   );
 
   // --- Server-side deposit flow ---
@@ -661,7 +661,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             chatMode={deal.chat_mode}
             conversationId={conversationId}
             anonymousId={!authenticated ? anonymousId : null}
-            disabled={isTerminal || isConversationClosed || disputeQuestionsComplete || (!isSeller && !isBuyer && deal.status !== "OPEN")}
+            disabled={isTerminal || isConversationClosed || disputeEvidenceComplete || (!isSeller && !isBuyer && deal.status !== "OPEN")}
             placeholder={deal.status === "OPEN" && !isSeller ? (buyerOfferAccepted ? "Ask a question..." : "Make an offer...") : "Type a message..."}
             onDepositRequest={(cents) => setNegotiatedPriceCents(cents)}
             onDeposit={handleDeposit}

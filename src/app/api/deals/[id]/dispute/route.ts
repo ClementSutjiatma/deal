@@ -64,6 +64,8 @@ export async function POST(
       dispute_tx_hash,
       dispute_buyer_q: 0,
       dispute_seller_q: 0,
+      dispute_buyer_done: false,
+      dispute_seller_done: false,
     })
     .eq("id", id);
 

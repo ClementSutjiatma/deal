@@ -60,7 +60,8 @@ export const BUYER_CONFIRM_TIMEOUT = 4 * 60 * 60; // 4 hours
 export const DEAL_EXPIRY_TIMEOUT = 7 * 24 * 60 * 60; // 7 days
 export const DISPUTE_RESPONSE_TIMEOUT = 4 * 60 * 60; // 4 hours (legacy, kept for reference)
 export const DISPUTE_INACTIVITY_TIMEOUT = 24 * 60 * 60; // 24 hours — safety net for unresponsive parties
-export const DISPUTE_MAX_QUESTIONS = 5; // max evidence questions per party
+export const DISPUTE_MAX_QUESTIONS = 5; // max evidence questions per party (legacy, kept for reference)
+export const DISPUTE_SAFETY_CAP = 20; // hard cap on AI exchanges per party to prevent infinite loops
 export const DISPUTE_WINDOW_AFTER_CONFIRM = 24 * 60 * 60; // 24 hours
 
 // Base chain

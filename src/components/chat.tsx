@@ -742,6 +742,21 @@ function ChatInner({
         <div ref={bottomRef} />
       </div>
 
+      {/* Waiting for Ruling banner (when evidence collection is done but no ruling yet) */}
+      {disabled && chatMode === "dispute" && dealStatus === "DISPUTED" && (
+        <div className="px-4 py-4 border-t border-zinc-200 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <span className="text-xl flex-shrink-0 mt-0.5">⚖️</span>
+            <div>
+              <p className="text-sm font-semibold text-zinc-900">Evidence Submitted</p>
+              <p className="text-sm text-zinc-600 mt-1">
+                Your evidence has been submitted. We&apos;re now reviewing both sides and will issue a ruling shortly. You&apos;ll be notified of the outcome.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Pending image previews */}
       {previews.length > 0 && (
         <div className="px-4 py-2 border-t border-zinc-100 flex gap-2 overflow-x-auto">

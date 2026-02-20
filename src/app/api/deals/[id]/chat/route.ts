@@ -3,7 +3,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
 import { streamDealChat } from "@/lib/ai/agent";
 import type { DealContext } from "@/lib/ai/agent";
-import { CHAT_MODES, DISPUTE_MAX_QUESTIONS } from "@/lib/constants";
+import { CHAT_MODES, DISPUTE_SAFETY_CAP } from "@/lib/constants";
 import type { UIMessage } from "ai";
 
 export async function POST(
@@ -144,9 +144,10 @@ export async function POST(
   if (deal.chat_mode === CHAT_MODES.DISPUTE) {
     visibility = role === "seller" ? "seller_only" : "buyer_only";
 
-    // Reject new messages if this party has already completed their 5 questions
+    // Reject new messages if this party's evidence collection is complete (done flag or safety cap)
+    const isDone = role === "buyer" ? deal.dispute_buyer_done : deal.dispute_seller_done;
     const currentQCount = role === "buyer" ? (deal.dispute_buyer_q || 0) : (deal.dispute_seller_q || 0);
-    if (currentQCount >= DISPUTE_MAX_QUESTIONS) {
+    if (isDone || currentQCount >= DISPUTE_SAFETY_CAP) {
       return new Response(
         JSON.stringify({ error: "Evidence collection complete. Waiting for ruling." }),
         { status: 400, headers: { "Content-Type": "application/json" } }
@@ -310,32 +311,80 @@ export async function POST(
       }
     }
 
-    // Dispute mode: track question count and auto-trigger adjudication
+    // Dispute mode: track exchange count, handle evidence completion tool, trigger adjudication
     if (deal.chat_mode === CHAT_MODES.DISPUTE) {
       const counterField = role === "buyer" ? "dispute_buyer_q" : "dispute_seller_q";
+      const doneField = role === "buyer" ? "dispute_buyer_done" : "dispute_seller_done";
       const currentCount = role === "buyer" ? (deal.dispute_buyer_q || 0) : (deal.dispute_seller_q || 0);
       const newCount = currentCount + 1;
 
-      // Increment question counter
+      // Check if the AI called the completeEvidenceCollection tool
+      let evidenceComplete = false;
+      let evidenceSummary: string | null = null;
+      if (toolCalls) {
+        for (const tc of toolCalls) {
+          if (tc.toolName === "completeEvidenceCollection") {
+            evidenceComplete = true;
+            evidenceSummary = (tc.input as { summary?: string })?.summary || null;
+          }
+        }
+      }
+
+      // Auto-complete if safety cap reached without tool call
+      if (!evidenceComplete && newCount >= DISPUTE_SAFETY_CAP) {
+        evidenceComplete = true;
+        evidenceSummary = "Evidence collection reached safety limit.";
+      }
+
+      // Build update object
+      const updateData: Record<string, unknown> = { [counterField]: newCount };
+      if (evidenceComplete) {
+        updateData[doneField] = true;
+        // Store evidence summary in deal terms
+        const existingTerms = (deal.terms as Record<string, unknown>) || {};
+        const summaryField = role === "buyer" ? "dispute_buyer_summary" : "dispute_seller_summary";
+        updateData.terms = { ...existingTerms, [summaryField]: evidenceSummary };
+      }
+
       await (supabase.from("deals") as any)
-        .update({ [counterField]: newCount })
+        .update(updateData)
         .eq("id", dealId);
 
-      // Check if both sides have completed their questions
-      const otherCount = role === "buyer" ? (deal.dispute_seller_q || 0) : (deal.dispute_buyer_q || 0);
+      // If evidence is complete, insert a system message explaining next steps
+      if (evidenceComplete) {
+        await (supabase.from("messages") as any).insert({
+          deal_id: dealId,
+          conversation_id: resolvedConversationId,
+          role: "ai",
+          content: "Your evidence has been submitted. We're now reviewing both sides and will issue a ruling shortly. You'll be notified of the outcome.",
+          visibility,
+        });
+      }
 
-      if (newCount >= DISPUTE_MAX_QUESTIONS && otherCount >= DISPUTE_MAX_QUESTIONS) {
-        // Both sides done — trigger adjudication (fire-and-forget)
-        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-          ? `https://${process.env.VERCEL_URL}`
-          : "http://localhost:3000";
-        fetch(`${baseUrl}/api/deals/${dealId}/adjudicate`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-internal-secret": process.env.INTERNAL_API_SECRET || "",
-          },
-        }).catch((err) => console.error("Adjudication trigger failed:", err));
+      // Check if both sides are done — trigger adjudication
+      if (evidenceComplete) {
+        // Re-fetch deal to get latest state (avoid race condition with other party)
+        const { data: freshDeal } = await (supabase.from("deals") as any)
+          .select("dispute_buyer_done, dispute_seller_done")
+          .eq("id", dealId)
+          .single() as { data: any };
+
+        const buyerDone = role === "buyer" ? true : freshDeal?.dispute_buyer_done;
+        const sellerDone = role === "seller" ? true : freshDeal?.dispute_seller_done;
+
+        if (buyerDone && sellerDone) {
+          // Both sides done — trigger adjudication (fire-and-forget)
+          const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+            ? `https://${process.env.VERCEL_URL}`
+            : "http://localhost:3000";
+          fetch(`${baseUrl}/api/deals/${dealId}/adjudicate`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-internal-secret": process.env.INTERNAL_API_SECRET || "",
+            },
+          }).catch((err) => console.error("Adjudication trigger failed:", err));
+        }
       }
     }
   });
