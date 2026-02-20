@@ -214,6 +214,13 @@ export async function POST(
 
   const { data: recentMessages } = await messagesQuery as { data: any };
 
+  // Fetch deal events for timeline context (especially useful in dispute mode)
+  const { data: dealEvents } = await (supabase
+    .from("deal_events") as any)
+    .select("event_type, actor_id, metadata, created_at")
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: true }) as { data: any[] };
+
   const context: DealContext = {
     deal: deal as any,
     seller: seller as any,
@@ -221,6 +228,7 @@ export async function POST(
     recentMessages: (recentMessages || []) as any,
     senderRole: role,
     conversation: conversation as any,
+    dealEvents: (dealEvents || []) as any,
   };
 
   // Stream AI response with tools
@@ -443,10 +451,17 @@ async function triggerAdjudication(
     buyer = (await (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as { data: any }).data;
   }
 
+  // Fetch deal events for timeline context
+  const { data: adjEvents } = await (supabase
+    .from("deal_events") as any)
+    .select("event_type, actor_id, metadata, created_at")
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: true }) as { data: any[] };
+
   // Run AI adjudication
   let ruling;
   try {
-    ruling = await adjudicateDispute(deal, seller, buyer, buyerMessages, sellerMessages);
+    ruling = await adjudicateDispute(deal, seller, buyer, buyerMessages, sellerMessages, adjEvents || []);
   } catch (err) {
     console.error("AI adjudication failed:", err);
     ruling = {

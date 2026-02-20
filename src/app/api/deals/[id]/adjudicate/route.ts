@@ -84,10 +84,17 @@ export async function POST(
     buyer = (await (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as { data: any }).data;
   }
 
+  // Fetch deal events for timeline context
+  const { data: dealEvents } = await (supabase
+    .from("deal_events") as any)
+    .select("event_type, actor_id, metadata, created_at")
+    .eq("deal_id", id)
+    .order("created_at", { ascending: true }) as { data: any[] };
+
   // Run AI adjudication
   let ruling;
   try {
-    ruling = await adjudicateDispute(deal, seller, buyer, buyerMessages, sellerMessages);
+    ruling = await adjudicateDispute(deal, seller, buyer, buyerMessages, sellerMessages, dealEvents || []);
   } catch (err) {
     console.error("AI adjudication failed:", err);
     // Fallback: default to buyer refund

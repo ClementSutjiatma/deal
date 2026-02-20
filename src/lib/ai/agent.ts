@@ -3,6 +3,13 @@ import { streamText, generateText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
 import { dealChatTools, dealCreationTools, disputeTools, disputeEvidenceTools } from "./tools";
 
+export interface DealEvent {
+  event_type: string;
+  actor_id: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
 export interface DealContext {
   deal: Deal;
   seller: User;
@@ -10,6 +17,7 @@ export interface DealContext {
   recentMessages: Message[];
   senderRole: string;
   conversation?: Conversation | null;
+  dealEvents?: DealEvent[];
 }
 
 // Anthropic's provider-defined web search tool
@@ -84,6 +92,48 @@ After calling createDeal, continue in the SAME message with a short, friendly co
 Keep it warm and brief — like a friend confirming everything's sorted. Don't use bullet points or numbered lists. Example tone: "Your listing is live! I'll notify you the moment a buyer comes through. Share your link to get eyes on it — whoever deposits first locks in the deal. Drop your email so we can send you updates."
 
 After the deal is created, the conversation continues. The seller can still ask questions, provide their email, or create additional deals.`;
+}
+
+function buildDealTimeline(deal: Deal, events: DealEvent[]): string {
+  const lines: string[] = [];
+  const fmt = (iso: string | null) => {
+    if (!iso) return null;
+    return new Date(iso).toLocaleString("en-US", {
+      month: "short", day: "numeric", year: "numeric",
+      hour: "numeric", minute: "2-digit", hour12: true,
+    });
+  };
+
+  // Core deal timestamps
+  if (deal.created_at) lines.push(`• Deal listed: ${fmt(deal.created_at)}`);
+  if (deal.funded_at) lines.push(`• Buyer deposited into escrow: ${fmt(deal.funded_at)}`);
+  if (deal.transferred_at) lines.push(`• Seller marked tickets as transferred: ${fmt(deal.transferred_at)}`);
+  if (deal.confirmed_at) lines.push(`• Buyer confirmed receipt: ${fmt(deal.confirmed_at)}`);
+  if (deal.disputed_at) lines.push(`• Dispute filed by buyer: ${fmt(deal.disputed_at)}`);
+  if (deal.resolved_at) lines.push(`• Dispute resolved: ${fmt(deal.resolved_at)}`);
+
+  // Add events with metadata for extra context
+  for (const evt of events) {
+    const ts = fmt(evt.created_at);
+    switch (evt.event_type) {
+      case "funded":
+        // Already covered by deal.funded_at
+        break;
+      case "transferred":
+        // Already covered by deal.transferred_at
+        break;
+      case "disputed":
+        // Already covered by deal.disputed_at
+        break;
+      case "claimed":
+        lines.push(`• Deal claimed by buyer: ${ts}`);
+        break;
+      default:
+        lines.push(`• ${evt.event_type}: ${ts}`);
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "(No timeline data available)";
 }
 
 function buildDealChatPrompt(ctx: DealContext): string {
@@ -162,6 +212,11 @@ DISPUTE MODE — EVIDENCE COLLECTION:
 You are collecting evidence from the **${ctx.senderRole}**. This is a PRIVATE conversation — the other party CANNOT see these messages.
 
 Exchanges so far: ${ctx.senderRole === "buyer" ? ctx.deal.dispute_buyer_q : ctx.deal.dispute_seller_q}
+
+DEAL TIMELINE (system data — you already know this, do NOT ask the user about these events):
+${buildDealTimeline(deal, ctx.dealEvents || [])}
+
+IMPORTANT: You have full visibility into the deal lifecycle above. Do NOT ask the ${ctx.senderRole} questions about events that are already recorded in the system (e.g. "did you transfer?", "has the buyer accepted?", "when was the transfer?"). Instead, use this data to guide your questions and focus on what you DON'T know — like whether tickets actually work, screenshots of issues, etc.
 
 Your job is to ask structured questions to understand the ${ctx.senderRole === "buyer" ? "issue" : "seller's side"}:
 1. Ask what happened / what evidence they have
@@ -402,6 +457,7 @@ export async function adjudicateDispute(
   buyer: User | null,
   buyerMessages: Message[],
   sellerMessages: Message[],
+  dealEvents?: DealEvent[],
 ): Promise<AdjudicationResult> {
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
   const today = todayFormatted();
@@ -426,6 +482,9 @@ DEAL CONTEXT:
 - Seller: ${seller.name || "Seller"}
 - Buyer: ${buyer?.name || "Buyer"}
 - Dispute filed: ${deal.disputed_at || "unknown"}
+
+DEAL TIMELINE:
+${buildDealTimeline(deal, dealEvents || [])}
 
 RULES:
 - Burden of proof is on the seller (they claimed to have specific tickets and transfer them)

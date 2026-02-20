@@ -302,10 +302,13 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
       : (authenticated || deal.status === "OPEN")
         ? "buyer"
         : null;
-  const effectivePrice = negotiatedPriceCents ?? deal.price_cents;
+  const dealTerms = deal.terms as Record<string, unknown> | null;
+  const effectivePrice = negotiatedPriceCents
+    ?? (dealTerms?.buyer_offer_cents as number | undefined)
+    ?? deal.price_cents;
   const priceDisplay = `$${(effectivePrice / 100).toFixed(2)}`;
   const isTerminal = ["RELEASED", "REFUNDED", "AUTO_RELEASED", "AUTO_REFUNDED", "EXPIRED", "CANCELED"].includes(deal.status);
-  const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
+  const buyerOfferAccepted = !!dealTerms?.buyer_offer_accepted;
   const isConversationClosed = conversationStatus === "closed";
   // Disable chat input when this party's evidence collection is done
   const disputeEvidenceComplete = deal.status === "DISPUTED" && (
