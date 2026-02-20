@@ -56,6 +56,9 @@ importers:
       viem:
         specifier: ^2.46.2
         version: 2.46.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.3.6)
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@nomicfoundation/hardhat-toolbox':
         specifier: ^6.1.0
