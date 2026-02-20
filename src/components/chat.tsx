@@ -315,8 +315,27 @@ function ChatInner({
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
 
-          // AI messages: always allow through (dedup in merge step)
+          // AI messages: only pass through for roles that DON'T receive
+          // the AI response via useChat streaming (e.g. seller viewing
+          // a buyer conversation in post-OPEN states). When the current
+          // user triggered the AI response, useChat already has it —
+          // adding it again via realtime causes duplicates because the
+          // server-generated DB ID differs from the client-side ID.
           if (newMsg.role === "ai") {
+            // Seller in post-OPEN sees AI messages via realtime (not streaming)
+            const sellerObserving = userRole === "seller";
+            if (!sellerObserving) {
+              knownMsgIds.current.add(newMsg.id);
+              // Still extract deposit metadata even though we skip display
+              if (onDepositRequest) {
+                const meta = newMsg.metadata as Record<string, unknown> | null;
+                if (meta?.deposit_request_cents) {
+                  onDepositRequest(meta.deposit_request_cents as number);
+                }
+              }
+              return; // useChat already has this message from streaming
+            }
+
             knownMsgIds.current.add(newMsg.id);
             setRealtimeMessages((prev) => {
               if (prev.some((m) => m.id === newMsg.id)) return prev;
