@@ -27,6 +27,8 @@ interface Props {
   accessToken?: string | null;
   authenticated?: boolean;
   dealStatus?: string;
+  dealPriceCents?: number;
+  buyerOfferAccepted?: boolean;
 }
 
 /** Convert a Supabase Message to AI SDK UIMessage format */
@@ -82,6 +84,8 @@ export function Chat({
   accessToken,
   authenticated,
   dealStatus,
+  dealPriceCents,
+  buyerOfferAccepted,
 }: Props) {
   const { getAccessToken } = usePrivy();
   const [input, setInput] = useState("");
@@ -153,7 +157,7 @@ export function Chat({
       }
     }
     fetchMessages();
-  }, [dealId, userId, conversationId, accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dealId, userId, conversationId, accessToken, dealStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // useChat for streaming AI responses
   const chatOptions = useMemo(() => ({
@@ -203,9 +207,32 @@ export function Chat({
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
 
-          // Skip AI messages — these come through the useChat stream
+          // Skip AI messages that came through useChat streaming (they're already in aiMessages).
+          // But ALLOW server-inserted AI messages (e.g. deposit confirmation, system messages)
+          // which don't come through the stream. We can tell by checking a short delay —
+          // if the message appears while we're NOT streaming, it's server-inserted.
           if (newMsg.role === "ai") {
+            // For the current user who triggered the AI response via chat,
+            // the streaming response is already in aiMessages. Skip to avoid duplicates.
+            // But for the OTHER party (e.g. seller viewing chat after buyer deposits),
+            // these server-inserted AI messages need to show up.
+            // Simple heuristic: if this user's role matches the current chat stream user,
+            // skip (the streaming response handles it). Otherwise, allow it through.
+            // Actually, the safest approach: always allow AI messages through realtime
+            // and deduplicate in the merge step below.
             knownMsgIds.current.add(newMsg.id);
+            setRealtimeMessages((prev) => {
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
+            });
+
+            // Check for deposit request
+            if (onDepositRequest) {
+              const meta = newMsg.metadata as Record<string, unknown> | null;
+              if (meta?.deposit_request_cents) {
+                onDepositRequest(meta.deposit_request_cents as number);
+              }
+            }
             return;
           }
 
@@ -230,14 +257,6 @@ export function Chat({
             if (prev.some((m) => m.id === newMsg.id)) return prev;
             return [...prev, newMsg];
           });
-
-          // Check for deposit request
-          if (newMsg.role === "ai" && onDepositRequest) {
-            const meta = newMsg.metadata as Record<string, unknown> | null;
-            if (meta?.deposit_request_cents) {
-              onDepositRequest(meta.deposit_request_cents as number);
-            }
-          }
         }
       )
       .subscribe();
@@ -437,6 +456,25 @@ export function Chat({
             </div>
           );
         })}
+
+        {/* Fallback deposit prompt: show when offer is accepted but no tool call in messages */}
+        {buyerOfferAccepted && dealStatus === "OPEN" && userRole === "buyer" && !lastDepositMsgId && dealPriceCents && (onDeposit || onLogin) && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
+              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <DepositPrompt
+                amountCents={dealPriceCents}
+                onDeposit={onDeposit || (() => {})}
+                disabled={disabled}
+                loading={depositLoading}
+                authenticated={authenticated}
+                onLogin={onLogin}
+                dealStatus={dealStatus}
+                isLatest={true}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Streaming indicator */}
         {isStreaming && allMessages[allMessages.length - 1]?.role === "user" && (

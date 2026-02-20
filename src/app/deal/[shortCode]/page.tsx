@@ -138,7 +138,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         const res = await fetch(`/api/deals/${deal!.id}/conversations?seller_id=${user!.id}`);
         if (res.ok) {
           const convs: Conversation[] = await res.json();
-          const claimed = convs.find((c) => c.status === "claimed");
+          // Find the claimed conversation (preferred) or the one with buyer_id matching deal.buyer_id
+          const claimed = convs.find((c) => c.status === "claimed")
+            || convs.find((c) => c.buyer_id === deal!.buyer_id);
           if (claimed) {
             setConversationId(claimed.id);
             setConversationStatus(claimed.status);
@@ -610,6 +612,8 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             accessToken={chatAccessToken}
             authenticated={authenticated}
             dealStatus={deal.status}
+            dealPriceCents={effectivePrice}
+            buyerOfferAccepted={buyerOfferAccepted}
           />
         )}
       </div>
