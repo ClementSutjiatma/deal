@@ -137,6 +137,33 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     };
   }, [deal?.id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Client-side adjudication trigger — when both parties' evidence is done but
+  // the deal is still DISPUTED, fire the adjudicate endpoint as a fallback.
+  // This handles the case where the server-side after() was killed by Vercel.
+  const [adjudicationTriggered, setAdjudicationTriggered] = useState(false);
+  useEffect(() => {
+    if (!deal || !authenticated || adjudicationTriggered) return;
+    const dealAny = deal as Record<string, unknown>;
+    const bothDone = dealAny.dispute_buyer_done === true && dealAny.dispute_seller_done === true;
+    if (deal.status === "DISPUTED" && bothDone) {
+      setAdjudicationTriggered(true);
+      (async () => {
+        try {
+          const token = await getAccessToken();
+          await fetch(`/api/deals/${deal.id}/adjudicate`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+          });
+        } catch {
+          // Adjudication may already be running server-side — that's fine
+        }
+      })();
+    }
+  }, [deal?.status, (deal as Record<string, unknown> | null)?.dispute_buyer_done, (deal as Record<string, unknown> | null)?.dispute_seller_done, authenticated, adjudicationTriggered, deal?.id, getAccessToken]);
+
   // Sync Privy user -> app user (populates privy_wallet_id, wallet_address, etc.)
   const [hasSynced, setHasSynced] = useState(false);
   useEffect(() => {

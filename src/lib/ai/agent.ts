@@ -520,11 +520,11 @@ ${sellerEvidence || "(Seller provided no evidence)"}
 Please review the evidence and call the resolveDispute tool with your ruling.`;
 
   const result = await generateText({
-    model: anthropic("claude-sonnet-4-5-20250929"),
+    model: anthropic("claude-haiku-3-5-20241022"),
     system: systemPrompt,
     messages: [{ role: "user", content: userMessage }],
     tools: disputeTools,
-    maxOutputTokens: 1024,
+    maxOutputTokens: 512,
   });
 
   // Extract the resolveDispute tool call

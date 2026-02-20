@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { after } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
 import { streamDealChat, adjudicateDispute } from "@/lib/ai/agent";
@@ -390,11 +391,16 @@ export async function POST(
         const sellerDone = role === "seller" ? true : freshDeal?.dispute_seller_done;
 
         if (buyerDone && sellerDone) {
-          // Both sides done — trigger adjudication directly (no HTTP self-call
-          // which gets blocked by Vercel deployment protection on previews)
-          triggerAdjudication(dealId, resolvedConversationId, supabase).catch(
-            (err) => console.error("Adjudication failed:", err)
-          );
+          // Both sides done — use after() to run adjudication in the background
+          // after the response is sent. This keeps the serverless function alive
+          // on Vercel (without after(), fire-and-forget gets killed when response ends).
+          after(async () => {
+            try {
+              await triggerAdjudication(dealId, resolvedConversationId, supabase);
+            } catch (err) {
+              console.error("Adjudication failed:", err);
+            }
+          });
         }
       }
     }
@@ -414,49 +420,65 @@ async function triggerAdjudication(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
 ) {
-  // Fetch deal
-  const { data: deal } = await (supabase
-    .from("deals") as any)
-    .select("*")
-    .eq("id", dealId)
-    .eq("status", DEAL_STATUSES.DISPUTED)
-    .single() as { data: any };
+  // Fetch deal + messages + events in parallel for speed
+  const [dealResult, messagesResult, eventsResult] = await Promise.all([
+    (supabase.from("deals") as any)
+      .select("*")
+      .eq("id", dealId)
+      .eq("status", DEAL_STATUSES.DISPUTED)
+      .single() as Promise<{ data: any }>,
+    (supabase.from("messages") as any)
+      .select("*")
+      .eq("deal_id", dealId)
+      .in("visibility", ["buyer_only", "seller_only"])
+      .order("created_at", { ascending: true }) as Promise<{ data: Message[] }>,
+    (supabase.from("deal_events") as any)
+      .select("event_type, actor_id, metadata, created_at")
+      .eq("deal_id", dealId)
+      .order("created_at", { ascending: true }) as Promise<{ data: any[] }>,
+  ]);
 
+  const deal = dealResult.data;
   if (!deal) {
     console.error("Adjudication: deal not found or not disputed", dealId);
     return;
   }
 
-  // Fetch ALL dispute messages (both buyer_only and seller_only)
-  const { data: allMessages } = await (supabase
-    .from("messages") as any)
-    .select("*")
-    .eq("deal_id", dealId)
-    .in("visibility", ["buyer_only", "seller_only"])
-    .order("created_at", { ascending: true }) as { data: Message[] };
-
-  const messages = allMessages || [];
+  const messages = messagesResult.data || [];
   const buyerMessages = messages.filter((m) => m.visibility === "buyer_only");
   const sellerMessages = messages.filter((m) => m.visibility === "seller_only");
+  const adjEvents = eventsResult.data || [];
 
-  // Fetch users
-  const { data: seller } = await (supabase
-    .from("users") as any)
-    .select("*")
-    .eq("id", deal.seller_id)
-    .single() as { data: any };
+  // Fetch users in parallel + insert "adjudicating" message immediately so users see progress
+  const [sellerResult, buyerResult] = await Promise.all([
+    (supabase.from("users") as any)
+      .select("*")
+      .eq("id", deal.seller_id)
+      .single() as Promise<{ data: any }>,
+    deal.buyer_id
+      ? (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as Promise<{ data: any }>
+      : Promise.resolve({ data: null }),
+    // Insert "adjudicating" status messages for both parties
+    (supabase.from("messages") as any).insert([
+      {
+        deal_id: dealId,
+        conversation_id: conversationId,
+        role: "ai",
+        content: "Both sides have submitted evidence. Reviewing and issuing a ruling now...",
+        visibility: "buyer_only",
+      },
+      {
+        deal_id: dealId,
+        conversation_id: conversationId,
+        role: "ai",
+        content: "Both sides have submitted evidence. Reviewing and issuing a ruling now...",
+        visibility: "seller_only",
+      },
+    ]),
+  ]);
 
-  let buyer = null;
-  if (deal.buyer_id) {
-    buyer = (await (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as { data: any }).data;
-  }
-
-  // Fetch deal events for timeline context
-  const { data: adjEvents } = await (supabase
-    .from("deal_events") as any)
-    .select("event_type, actor_id, metadata, created_at")
-    .eq("deal_id", dealId)
-    .order("created_at", { ascending: true }) as { data: any[] };
+  const seller = sellerResult.data;
+  const buyer = buyerResult.data;
 
   // Run AI adjudication
   let ruling;
@@ -471,6 +493,17 @@ async function triggerAdjudication(
   }
 
   const favorBuyer = ruling.ruling === "BUYER";
+
+  // Re-check status before on-chain execution to prevent double-adjudication
+  // (client-side fallback may race with this after() call)
+  const { data: statusCheck } = await (supabase.from("deals") as any)
+    .select("status")
+    .eq("id", dealId)
+    .single() as { data: any };
+  if (statusCheck?.status !== DEAL_STATUSES.DISPUTED) {
+    console.log(`Adjudication skipped for ${dealId}: status is ${statusCheck?.status} (already resolved)`);
+    return;
+  }
 
   // Execute on-chain resolution
   let txHash: string | null = null;
