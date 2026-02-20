@@ -1,10 +1,12 @@
 "use client";
 
-import { PrivyProvider } from "@privy-io/react-auth";
-import { createContext, useContext, useState, useCallback } from "react";
+import { PrivyProvider, usePrivy, useSigners } from "@privy-io/react-auth";
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import { base, baseSepolia } from "viem/chains";
 import type { User } from "@/lib/types/database";
 import { UserMenu } from "./user-menu";
+
+const SERVER_SIGNER_QUORUM_ID = process.env.NEXT_PUBLIC_SERVER_SIGNER_ID || "mtot90ao7hbycjalg7f269it";
 
 const appChain =
   process.env.NEXT_PUBLIC_CHAIN_ID === "84532" ? baseSepolia : base;
@@ -86,9 +88,50 @@ export function Providers({ children }: { children: React.ReactNode }) {
       }}
     >
       <AppContext.Provider value={{ user, setUser, syncUser }}>
+        <WalletSignerSetup />
         {children}
         <UserMenu />
       </AppContext.Provider>
     </PrivyProvider>
   );
+}
+
+/**
+ * Ensures the user's embedded wallet has the server-deposit authorization key
+ * as a signer. This enables server-side gas-sponsored transactions (deposits,
+ * transfers, confirmations). Runs once after login when we detect the wallet
+ * isn't delegated yet.
+ */
+function WalletSignerSetup() {
+  const { authenticated, user: privyUser } = usePrivy();
+  const { addSigners } = useSigners();
+  const hasAttempted = useRef(false);
+
+  useEffect(() => {
+    if (!authenticated || !privyUser || hasAttempted.current) return;
+
+    const embeddedWallet = privyUser.linkedAccounts?.find(
+      (a: any) => a.type === "wallet" && a.walletClientType === "privy"
+    ) as { address?: string; delegated?: boolean } | undefined;
+
+    // Only add signer if wallet exists and isn't delegated yet
+    if (!embeddedWallet?.address || embeddedWallet.delegated) return;
+
+    hasAttempted.current = true;
+
+    addSigners({
+      address: embeddedWallet.address,
+      signers: [{ signerId: SERVER_SIGNER_QUORUM_ID }],
+    })
+      .then(() => {
+        console.log("[WalletSignerSetup] Server signer added to wallet");
+      })
+      .catch((err) => {
+        console.error("[WalletSignerSetup] Failed to add signer:", err);
+        // Reset so it can retry on next render
+        hasAttempted.current = false;
+      });
+  }, [authenticated, privyUser, addSigners]);
+
+  return null;
 }
