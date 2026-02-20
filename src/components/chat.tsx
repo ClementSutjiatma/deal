@@ -205,7 +205,7 @@ export function Chat(props: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -548,12 +548,12 @@ function ChatInner({
                     : isOtherParty
                       ? "bg-zinc-200 text-zinc-900"
                       : isOwnMessage
-                        ? "bg-orange-500 text-white"
+                        ? "bg-emerald-600 text-white"
                         : "bg-zinc-200 text-zinc-900"
                 }`}
               >
                 {isAssistant && (
-                  <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+                  <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
                 )}
                 {isOtherParty && otherPartyLabel && (
                   <div className="text-xs font-semibold mb-1 text-zinc-500">{otherPartyLabel}</div>
@@ -653,7 +653,7 @@ function ChatInner({
         {buyerOfferAccepted && dealStatus === "OPEN" && userRole === "buyer" && !lastDepositMsgId && dealPriceCents && (onDeposit || onLogin) && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
-              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
               <DepositPrompt
                 amountCents={dealPriceCents}
                 onDeposit={onDeposit || (() => {})}
@@ -672,7 +672,7 @@ function ChatInner({
         {dealStatus === "FUNDED" && userRole === "seller" && !lastTransferMsgId && onTransfer && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
-              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
               <TransferPrompt
                 transferMethod={transferMethod || ""}
                 onTransfer={onTransfer}
@@ -689,7 +689,7 @@ function ChatInner({
         {dealStatus === "TRANSFERRED" && userRole === "buyer" && !lastReceiptMsgId && onConfirm && onDispute && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
-              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
               <ReceiptPrompt
                 transferMethod={transferMethod || ""}
                 onConfirm={onConfirm}
@@ -758,7 +758,7 @@ function ChatInner({
               onClick={() => fileInputRef.current?.click()}
               className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
                 pendingFiles.length > 0
-                  ? "bg-orange-100 text-orange-600"
+                  ? "bg-emerald-100 text-emerald-700"
                   : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
               }`}
               disabled={isStreaming}
@@ -771,13 +771,13 @@ function ChatInner({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={placeholder || "Type a message..."}
-            className="flex-1 h-10 px-4 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-orange-500/50"
+            className="flex-1 h-10 px-4 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-emerald-600/50"
             disabled={isStreaming}
           />
           <button
             type="submit"
             disabled={(!input.trim() && pendingFiles.length === 0) || isStreaming}
-            className="w-10 h-10 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
+            className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors disabled:opacity-50"
           >
             <Send className="w-4 h-4" />
           </button>

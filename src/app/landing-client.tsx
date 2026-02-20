@@ -75,12 +75,12 @@ export function LandingClient() {
                 }}
                 placeholder="2 Taylor Swift tickets, section 204, $150 each..."
                 rows={3}
-                className="w-full resize-none rounded-2xl border border-zinc-200 bg-white px-5 py-4 pr-14 text-base outline-none placeholder:text-zinc-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20 transition-all"
+                className="w-full resize-none rounded-2xl border border-zinc-200 bg-white px-5 py-4 pr-14 text-base outline-none placeholder:text-zinc-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
               />
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="absolute right-3 bottom-3 w-10 h-10 rounded-xl bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-30 disabled:hover:bg-orange-500"
+                className="absolute right-3 bottom-3 w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors disabled:opacity-30 disabled:hover:bg-emerald-600"
               >
                 <ArrowRight className="w-4 h-4" />
               </button>
@@ -100,8 +100,8 @@ export function LandingClient() {
         {/* Benefits */}
         <div className="max-w-lg w-full mt-16 space-y-6">
           <div className="flex gap-4 items-start">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
-              <TrendingUp className="w-4 h-4 text-orange-500" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">
@@ -114,8 +114,8 @@ export function LandingClient() {
           </div>
 
           <div className="flex gap-4 items-start">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
-              <Lock className="w-4 h-4 text-orange-500" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <Lock className="w-4 h-4 text-emerald-600" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">
@@ -128,8 +128,8 @@ export function LandingClient() {
           </div>
 
           <div className="flex gap-4 items-start">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
-              <Scale className="w-4 h-4 text-orange-500" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <Scale className="w-4 h-4 text-emerald-600" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">

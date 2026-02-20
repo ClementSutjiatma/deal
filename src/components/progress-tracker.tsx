@@ -49,7 +49,7 @@ export function ProgressTracker({ status }: Props) {
                     isComplete
                       ? "bg-green-500 text-white"
                       : isCurrent
-                        ? "bg-orange-500 text-white"
+                        ? "bg-emerald-600 text-white"
                         : "bg-zinc-100 text-zinc-400"
                   }`}
                 >

@@ -251,7 +251,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -551,7 +551,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         })()}
 
         {deal.status === "FUNDED" && (
-          <div className="flex items-center gap-2 text-sm text-orange-600 font-medium">
+          <div className="flex items-center gap-2 text-sm text-emerald-700 font-medium">
             <Lock className="w-4 h-4" />
             {priceDisplay} locked in escrow
             {deal.funded_at && (
@@ -604,9 +604,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
 
       {/* On-chain transaction status banner */}
       {(escrow.isLoading || depositLoading) && (
-        <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin text-orange-500" />
-          <span className="text-sm text-orange-700 font-medium">
+        <div className="px-4 py-3 bg-emerald-50 border-b border-emerald-200 flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+          <span className="text-sm text-emerald-800 font-medium">
             {depositLoading ? "Processing deposit..." : STEP_LABELS[escrow.step]}
           </span>
         </div>
@@ -645,7 +645,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
         ) : (!isSeller && !conversationId) || (isSeller && deal.status !== "OPEN" && deal.buyer_id && !conversationId) ? (
           /* Waiting for conversation to load (both anonymous and authenticated) */
           <div className="flex items-center justify-center h-full">
-            <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+            <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
           /* Both anonymous and authenticated users see Chat */
@@ -696,7 +696,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                       Balance: {usdcFormatted ?? "..."} USDC
                     </span>
                     {!hasEnough && (
-                      <span className="text-orange-500">
+                      <span className="text-emerald-600">
                         Need {(effectivePrice / 100).toFixed(2)} USDC
                       </span>
                     )}

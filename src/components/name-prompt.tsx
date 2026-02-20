@@ -37,7 +37,7 @@ export function NamePrompt() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="bg-orange-50 rounded-2xl p-4 mb-4">
+    <form onSubmit={handleSubmit} className="bg-emerald-50 rounded-2xl p-4 mb-4">
       <p className="text-sm font-medium text-zinc-700 mb-2">
         What should we call you?
       </p>
@@ -47,12 +47,12 @@ export function NamePrompt() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="First name"
-          className="flex-1 h-10 px-4 rounded-xl bg-white text-sm outline-none focus:ring-2 focus:ring-orange-500/50"
+          className="flex-1 h-10 px-4 rounded-xl bg-white text-sm outline-none focus:ring-2 focus:ring-emerald-600/50"
         />
         <button
           type="submit"
           disabled={!name.trim() || saving}
-          className="h-10 px-4 rounded-xl bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50"
+          className="h-10 px-4 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors disabled:opacity-50"
         >
           Save
         </button>

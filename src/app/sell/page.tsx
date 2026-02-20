@@ -13,7 +13,7 @@ import { useAppUser } from "@/components/providers";
 
 export default function SellPage() {
   return (
-    <AuthGate>
+    <AuthGate autoLogin>
       <SellChatGate />
     </AuthGate>
   );
@@ -38,7 +38,7 @@ function SellChatGate() {
   if (!user || !token) {
     return (
       <div className="flex flex-col h-screen max-w-lg mx-auto items-center justify-center">
-        <div className="w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -188,7 +188,7 @@ function SellChat({ accessToken }: { accessToken: string }) {
         {/* Latest user message (above input) */}
         <div className="w-full min-h-[60px] flex items-end justify-end">
           {latestUserContent && (
-            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-orange-500 text-white transition-all duration-300">
+            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-emerald-600 text-white transition-all duration-300">
               <MarkdownText>{latestUserContent}</MarkdownText>
             </div>
           )}
@@ -204,13 +204,13 @@ function SellChat({ accessToken }: { accessToken: string }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={dealLink ? "Ask me anything..." : "Describe your tickets..."}
-            className="flex-1 h-12 px-5 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-orange-500/50 transition-shadow"
+            className="flex-1 h-12 px-5 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-emerald-600/50 transition-shadow"
             disabled={isLoading}
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="w-12 h-12 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
+            className="w-12 h-12 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors disabled:opacity-50"
           >
             <Send className="w-4 h-4" />
           </button>
@@ -237,7 +237,7 @@ function SellChat({ accessToken }: { accessToken: string }) {
             </div>
           ) : latestAssistantContent ? (
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700 transition-all duration-300">
-              <div className="text-xs font-semibold mb-1 text-orange-600">
+              <div className="text-xs font-semibold mb-1 text-emerald-700">
                 Dealbay
               </div>
               <MarkdownText>{latestAssistantContent}</MarkdownText>

@@ -62,8 +62,8 @@ const EVENT_CONFIG: Record<
   funded: {
     label: "Deposited to escrow",
     icon: "out",
-    color: "text-orange-600",
-    bgColor: "bg-orange-50",
+    color: "text-emerald-700",
+    bgColor: "bg-emerald-50",
   },
   transferred: {
     label: "Tickets transferred",
@@ -98,8 +98,8 @@ const EVENT_CONFIG: Record<
   auto_refunded: {
     label: "Auto-refunded to buyer",
     icon: "in",
-    color: "text-orange-600",
-    bgColor: "bg-orange-50",
+    color: "text-emerald-700",
+    bgColor: "bg-emerald-50",
   },
   expired: {
     label: "Deal expired",
@@ -153,7 +153,7 @@ export default function WalletPage() {
         <p className="text-sm text-zinc-500">Log in to view your wallet</p>
         <button
           onClick={login}
-          className="px-6 py-2.5 rounded-full bg-orange-500 text-white text-sm font-semibold hover:bg-orange-600 transition-colors"
+          className="px-6 py-2.5 rounded-full bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors"
         >
           Log in
         </button>
@@ -314,7 +314,7 @@ export default function WalletPage() {
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="ml-1 hover:text-orange-500"
+                className="ml-1 hover:text-emerald-600"
               >
                 <ExternalLink className="w-3 h-3" />
               </a>
@@ -384,7 +384,7 @@ export default function WalletPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="text-orange-500 hover:underline"
+                          className="text-emerald-600 hover:underline"
                         >
                           tx
                         </a>

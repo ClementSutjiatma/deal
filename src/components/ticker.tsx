@@ -36,7 +36,7 @@ export function Ticker() {
       {/* Logo — fixed left */}
       <Link
         href="/"
-        className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 text-base font-bold text-zinc-900 hover:text-orange-500 transition-colors"
+        className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 text-base font-bold text-zinc-900 hover:text-emerald-600 transition-colors"
       >
         <span className="text-lg">🤝</span>
         Dealbay
@@ -50,7 +50,7 @@ export function Ticker() {
               <Link
                 key={`${listing.short_code}-${i}`}
                 href={`/deal/${listing.short_code}`}
-                className="inline-flex items-center gap-1.5 px-4 text-xs text-zinc-400 hover:text-orange-500 transition-colors flex-shrink-0"
+                className="inline-flex items-center gap-1.5 px-4 text-xs text-zinc-400 hover:text-emerald-600 transition-colors flex-shrink-0"
               >
                 <span className="font-medium text-zinc-600">
                   {listing.event_name}
