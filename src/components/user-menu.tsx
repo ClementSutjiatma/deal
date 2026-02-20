@@ -13,6 +13,7 @@ import {
   Wallet,
   ArrowUpRight,
   Loader2,
+  Plus,
 } from "lucide-react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
@@ -108,7 +109,16 @@ export function UserMenu() {
 
   if (!authenticated) {
     return (
-      <div className="fixed top-4 right-4 z-50">
+      <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
+        {pathname !== "/sell" && (
+          <Link
+            href="/sell"
+            className="h-9 px-3 rounded-full bg-orange-500 text-sm font-medium text-white hover:bg-orange-600 transition-colors flex items-center gap-1.5"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Sell
+          </Link>
+        )}
         <button
           onClick={login}
           className="h-9 px-4 rounded-full bg-zinc-100 text-sm font-medium text-zinc-700 hover:bg-zinc-200 transition-colors"
@@ -168,7 +178,16 @@ export function UserMenu() {
   }
 
   return (
-    <div ref={ref} className="fixed top-4 right-4 z-50">
+    <div ref={ref} className="fixed top-4 right-4 z-50 flex items-center gap-2">
+      {pathname !== "/sell" && (
+        <Link
+          href="/sell"
+          className="h-9 px-3 rounded-full bg-orange-500 text-sm font-medium text-white hover:bg-orange-600 transition-colors flex items-center gap-1.5"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Sell
+        </Link>
+      )}
       <button
         onClick={() => setOpen(!open)}
         className="h-9 px-3 rounded-full bg-zinc-100 text-sm font-medium text-zinc-700 hover:bg-zinc-200 transition-colors flex items-center gap-1.5"

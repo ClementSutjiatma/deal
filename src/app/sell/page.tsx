@@ -5,7 +5,7 @@ import { usePrivy } from "@privy-io/react-auth";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { Send, Copy, Check, X } from "lucide-react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { MarkdownText } from "@/components/markdown-text";
 import { AuthGate } from "@/components/auth-gate";
 import { NamePrompt } from "@/components/name-prompt";
@@ -61,6 +61,7 @@ function cleanContent(text: string): string {
 function SellChat({ accessToken }: { accessToken: string }) {
   const { user } = useAppUser();
   const { getAccessToken } = usePrivy();
+  const router = useRouter();
   const [dealLink, setDealLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [input, setInput] = useState("");
@@ -109,6 +110,9 @@ function SellChat({ accessToken }: { accessToken: string }) {
           const data = await res.json();
           if (data.deal_link) {
             setDealLink(data.deal_link);
+            // Auto-navigate to the deal page so the seller can see their listing
+            const url = new URL(data.deal_link);
+            router.push(url.pathname);
           }
         }
       }
