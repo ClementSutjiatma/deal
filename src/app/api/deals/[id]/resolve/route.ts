@@ -57,6 +57,15 @@ export async function POST(
     metadata: { favor_buyer, tx_hash: txHash, ruling: ruling_text },
   });
 
+  // Look up conversation for message scoping
+  const { data: conv } = await (supabase
+    .from("conversations") as any)
+    .select("id")
+    .eq("deal_id", id)
+    .eq("buyer_id", deal.buyer_id)
+    .single() as { data: any };
+  const convId = conv?.id || null;
+
   // Post ruling to both parties
   const rulingMessage = ruling_text || (favor_buyer
     ? "Ruling: Refund issued to buyer."
@@ -65,15 +74,19 @@ export async function POST(
   await (supabase.from("messages") as any).insert([
     {
       deal_id: id,
+      conversation_id: convId,
       role: "ai",
       content: rulingMessage,
       visibility: "buyer_only",
+      metadata: { dispute_ruling: favor_buyer ? "BUYER" : "SELLER", dispute_reasoning: rulingMessage },
     },
     {
       deal_id: id,
+      conversation_id: convId,
       role: "ai",
       content: rulingMessage,
       visibility: "seller_only",
+      metadata: { dispute_ruling: favor_buyer ? "BUYER" : "SELLER", dispute_reasoning: rulingMessage },
     },
   ]);
 

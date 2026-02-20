@@ -75,6 +75,10 @@ export interface Database {
           confirmed_at: string | null;
           disputed_at: string | null;
           resolved_at: string | null;
+          dispute_buyer_q: number;
+          dispute_seller_q: number;
+          dispute_buyer_done: boolean;
+          dispute_seller_done: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -102,6 +106,10 @@ export interface Database {
           confirmed_at?: string | null;
           disputed_at?: string | null;
           resolved_at?: string | null;
+          dispute_buyer_q?: number;
+          dispute_seller_q?: number;
+          dispute_buyer_done?: boolean;
+          dispute_seller_done?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -129,6 +137,10 @@ export interface Database {
           confirmed_at?: string | null;
           disputed_at?: string | null;
           resolved_at?: string | null;
+          dispute_buyer_q?: number;
+          dispute_seller_q?: number;
+          dispute_buyer_done?: boolean;
+          dispute_seller_done?: boolean;
           created_at?: string;
           updated_at?: string;
         };

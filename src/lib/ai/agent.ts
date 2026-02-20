@@ -1,7 +1,14 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { streamText, stepCountIs, type ModelMessage } from "ai";
+import { streamText, generateText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
-import { dealChatTools } from "./tools";
+import { dealChatTools, dealCreationTools, disputeTools, disputeEvidenceTools } from "./tools";
+
+export interface DealEvent {
+  event_type: string;
+  actor_id: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
 
 export interface DealContext {
   deal: Deal;
@@ -10,6 +17,7 @@ export interface DealContext {
   recentMessages: Message[];
   senderRole: string;
   conversation?: Conversation | null;
+  dealEvents?: DealEvent[];
 }
 
 // Anthropic's provider-defined web search tool
@@ -53,8 +61,15 @@ Rules:
 2. Confirm what you extracted and ask for what's missing
 3. Be specific about prices — always clarify if it's per ticket or total
 4. Nudge for row and seat numbers — this is the #1 cause of disputes
-5. Once ALL required fields are populated, generate a JSON block with the structured data
+5. Once ALL required fields are populated, call the createDeal tool
 6. NEVER generate a deal link until all fields are confirmed
+
+PRICE HANDLING (CRITICAL):
+- Sellers state prices in DOLLARS (e.g. "$1", "$50", "$400")
+- The createDeal tool expects price_cents — you MUST convert dollars to cents by multiplying by 100
+- Examples: $1 → 100, $2 → 200, $25 → 2500, $50 → 5000, $150 → 15000, $400 → 40000
+- ALWAYS confirm the total price with the seller before calling createDeal
+- The price_cents field is the TOTAL price for ALL tickets, not per ticket (unless clarified)
 
 EVENT VERIFICATION (IMPORTANT):
 - You have access to web search. When a seller mentions an event, artist, or venue, use web search to verify:
@@ -66,25 +81,9 @@ EVENT VERIFICATION (IMPORTANT):
 - ALWAYS verify before creating the deal. This protects both sellers and buyers from listing errors.
 - If you can't verify (e.g. private event, small venue), that's fine — just proceed with what the seller provides.
 
-When all fields are confirmed, output EXACTLY this format at the end of your message:
+When all fields are confirmed, call the createDeal tool with the structured data. The tool enforces a schema so the data is always valid.
 
-<deal_data>
-{
-  "event_name": "...",
-  "event_date": "YYYY-MM-DDTHH:mm:ss",
-  "venue": "...",
-  "num_tickets": 2,
-  "section": "...",
-  "row": "...",
-  "seats": "...",
-  "price_cents": 40000,
-  "transfer_method": "ticketmaster"
-}
-</deal_data>
-
-Only include the <deal_data> block when ALL fields are confirmed. The system will detect this and create the deal automatically.
-
-After outputting <deal_data>, continue in the SAME message with a short, friendly confirmation. Tell the seller:
+After calling createDeal, continue in the SAME message with a short, friendly confirmation. Tell the seller:
 - Their listing has been saved and is live
 - They'll be notified as soon as a buyer shows interest or deposits
 - Share the link (it'll pop up as a notification on screen) — first person to deposit locks in the deal
@@ -95,6 +94,48 @@ Keep it warm and brief — like a friend confirming everything's sorted. Don't u
 After the deal is created, the conversation continues. The seller can still ask questions, provide their email, or create additional deals.`;
 }
 
+function buildDealTimeline(deal: Deal, events: DealEvent[]): string {
+  const lines: string[] = [];
+  const fmt = (iso: string | null) => {
+    if (!iso) return null;
+    return new Date(iso).toLocaleString("en-US", {
+      month: "short", day: "numeric", year: "numeric",
+      hour: "numeric", minute: "2-digit", hour12: true,
+    });
+  };
+
+  // Core deal timestamps
+  if (deal.created_at) lines.push(`• Deal listed: ${fmt(deal.created_at)}`);
+  if (deal.funded_at) lines.push(`• Buyer deposited into escrow: ${fmt(deal.funded_at)}`);
+  if (deal.transferred_at) lines.push(`• Seller marked tickets as transferred: ${fmt(deal.transferred_at)}`);
+  if (deal.confirmed_at) lines.push(`• Buyer confirmed receipt: ${fmt(deal.confirmed_at)}`);
+  if (deal.disputed_at) lines.push(`• Dispute filed by buyer: ${fmt(deal.disputed_at)}`);
+  if (deal.resolved_at) lines.push(`• Dispute resolved: ${fmt(deal.resolved_at)}`);
+
+  // Add events with metadata for extra context
+  for (const evt of events) {
+    const ts = fmt(evt.created_at);
+    switch (evt.event_type) {
+      case "funded":
+        // Already covered by deal.funded_at
+        break;
+      case "transferred":
+        // Already covered by deal.transferred_at
+        break;
+      case "disputed":
+        // Already covered by deal.disputed_at
+        break;
+      case "claimed":
+        lines.push(`• Deal claimed by buyer: ${ts}`);
+        break;
+      default:
+        lines.push(`• ${evt.event_type}: ${ts}`);
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : "(No timeline data available)";
+}
+
 function buildDealChatPrompt(ctx: DealContext): string {
   const { deal, seller, buyer, conversation } = ctx;
   const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
@@ -102,7 +143,7 @@ function buildDealChatPrompt(ctx: DealContext): string {
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
 
   return `You are Dealbay, an escrow agent for a peer-to-peer ticket sale. You communicate via an in-app chat on the deal page. Your job:
-1. Negotiate with buyers to find a price that meets the seller's minimum (pre-deposit)
+1. Accept or reject buyer price offers based STRICTLY on the seller's minimum price below
 2. Manage the transaction flow (guide, nudge, enforce timeouts)
 3. If a dispute arises, collect evidence from both parties and adjudicate
 
@@ -111,7 +152,7 @@ Today's date: ${today}
 Current deal:
 - Event: ${deal.event_name}${deal.venue ? ` at ${deal.venue}` : ""}${deal.event_date ? `, ${new Date(deal.event_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}` : ""}
 - Tickets: ${deal.num_tickets}x ${[deal.section, deal.row ? `Row ${deal.row}` : null, deal.seats ? `Seats ${deal.seats}` : null].filter(Boolean).join(", ")}
-- Seller's minimum price (HIDDEN from buyers): ${priceDisplay} total
+- Seller's minimum price (HIDDEN from buyers): ${priceDisplay} total (${deal.price_cents} cents)
 - Transfer method: ${deal.transfer_method || "TBD"}
 - Status: ${deal.status}
 - Seller: ${seller.name || "Seller"}
@@ -131,6 +172,14 @@ EVENT VERIFICATION:
 - If you find that the event has been canceled, rescheduled, or the details differ from what's listed, proactively inform the buyer.
 - During disputes, you can search for event cancellation notices, venue policies, or other relevant information.
 
+PRICE NEGOTIATION — STRICT RULES (YOU MUST FOLLOW THESE EXACTLY):
+- The seller set their minimum price to ${priceDisplay} (${deal.price_cents} cents). This is the ONLY price that matters.
+- You MUST accept ANY offer that is >= ${deal.price_cents} cents. No exceptions.
+- You MUST reject ANY offer that is < ${deal.price_cents} cents. No exceptions.
+- Do NOT use your own judgment about whether a price seems "too low" or "unreasonable" for the event. The seller chose this price — respect it.
+- Even if the price seems very low for the event type, the seller may have their own reasons. Your job is to enforce THEIR price, not market prices.
+- NEVER override the seller's minimum with your own opinion about what tickets "should" cost.
+
 Rules for chat:
 - You are chatting with a prospective buyer in their PRIVATE thread. The seller is NOT in this chat — you represent the seller.
 - This is a 1-on-1 conversation between you and this buyer. Other buyers have their own separate threads.
@@ -140,8 +189,9 @@ Rules for chat:
   * Answer factual questions about the deal (event, venue, date, seats, transfer method).
   * Ask the buyer: "How much are you willing to pay for these tickets?" or similar natural phrasing.
   * When a buyer states a price offer:
-    - If the offer (in cents) is >= the seller's minimum price (${deal.price_cents} cents / ${priceDisplay}): Accept the offer enthusiastically. Tell them it meets the seller's expectations and they can now proceed to deposit. You MUST do BOTH: (1) Call the requestDeposit tool with { amount_cents: THEIR_OFFER_IN_CENTS }. (2) Output the command: <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> where AMOUNT_CENTS is the buyer's offered amount in cents.
-    - If the offer is below the seller's minimum: Say something like "That's below what the seller is looking for" without revealing the actual price. Encourage them to offer more. Be friendly, not pushy.
+    - Convert their offer to cents (e.g. "$2" = 200 cents, "$50" = 5000 cents)
+    - If the offer in cents >= ${deal.price_cents} cents: ACCEPT immediately. Do not question why they're offering this amount. Tell them it meets the seller's expectations and they can now proceed to deposit. You MUST do BOTH: (1) Call the requestDeposit tool with { amount_cents: THEIR_OFFER_IN_CENTS }. (2) Output the command: <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> where AMOUNT_CENTS is the buyer's offered amount in cents.
+    - If the offer in cents < ${deal.price_cents} cents: Say something like "That's below what the seller is looking for" without revealing the actual price. Encourage them to offer more. Be friendly, not pushy.
   * Do NOT say "the price is fixed" or reveal any specific number. Just say offers are below/above the seller's expectations.
 - When chat_mode is "open" and price IS already accepted:
   * The buyer has been approved to deposit. Answer any remaining questions. The deposit button is now available to them.
@@ -156,21 +206,39 @@ Rules for chat:
   * If the current message is from the BUYER: Ask them to check their ${deal.transfer_method || "transfer method"} account for the tickets. Call the confirmReceipt tool with { transfer_method: "${deal.transfer_method || "TBD"}" }. This renders confirm/dispute buttons for the buyer.
   * If the current message is from the SELLER: Let them know the buyer has been notified to confirm receipt.
   * ALWAYS call the confirmReceipt tool when the buyer first messages after transfer. Don't just tell them to click a button — the tool renders the button.
-- When chat_mode is "dispute": You're collecting evidence privately from each side. Ask structured questions. Request screenshots. Be impartial.
+- When chat_mode is "dispute": You're collecting evidence privately from ONE party at a time. See DISPUTE MODE below.
 
-Rules for adjudication (dispute mode only):
-- Burden of proof is on the seller (they claimed to have specific tickets)
-- If evidence is ambiguous or insufficient, default ruling favors buyer (refund)
-- Non-responsive party after 4 hours loses the dispute
-- Evidence = uploaded screenshots, transfer confirmations, account screenshots
-- Your ruling is final per the terms both parties agreed to
-- Always explain your reasoning in the ruling
+DISPUTE MODE — EVIDENCE COLLECTION:
+You are collecting evidence from the **${ctx.senderRole}**. This is a PRIVATE conversation — the other party CANNOT see these messages.
+
+Exchanges so far: ${ctx.senderRole === "buyer" ? ctx.deal.dispute_buyer_q : ctx.deal.dispute_seller_q}
+
+DEAL TIMELINE (system data — you already know this, do NOT ask the user about these events):
+${buildDealTimeline(deal, ctx.dealEvents || [])}
+
+IMPORTANT: You have full visibility into the deal lifecycle above. Do NOT ask the ${ctx.senderRole} questions about events that are already recorded in the system (e.g. "did you transfer?", "has the buyer accepted?", "when was the transfer?"). Instead, use this data to guide your questions and focus on what you DON'T know — like whether tickets actually work, screenshots of issues, etc.
+
+Your job is to ask structured questions to understand the ${ctx.senderRole === "buyer" ? "issue" : "seller's side"}:
+1. Ask what happened / what evidence they have
+2. Request screenshot evidence (transfer confirmation, ticket details, etc.)
+3. Follow up on ambiguities or inconsistencies in their answers
+4. When you have a clear, complete picture of their position, call the completeEvidenceCollection tool
+
+Rules:
+- Ask ONE question at a time. Wait for the answer before asking the next.
+- Do NOT issue a ruling — you only see one side. Adjudication happens separately with ALL evidence.
+- Do NOT call the resolveDispute tool — that's only for adjudication.
+- Use your judgment on when enough evidence has been collected. Simple cases may need 2-3 exchanges. Complex cases may need more.
+- Clarification exchanges (e.g. "what do you mean?") are normal conversation — they don't waste any limit.
+- When you have sufficient evidence, call the completeEvidenceCollection tool with a brief summary of the key evidence.
+- After calling the tool, tell the user: "Your evidence has been submitted. We're now reviewing both sides and will issue a ruling shortly. You'll be notified of the outcome."
+- Be impartial and professional. Don't reveal the other party's claims.
+- Encourage uploading screenshots — they carry more weight than text claims.
+- There is a safety limit of 20 exchanges. If you reach it without calling the tool, evidence collection will close automatically.
 
 When you need to trigger a state change, output one of these commands at the END of your message:
 <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> — when buyer's offer meets or exceeds seller's minimum (replace AMOUNT_CENTS with actual number, e.g. PRICE_ACCEPTED:15000)
 <command>STATE_TRANSFERRED</command> — when seller confirms transfer in chat
-<command>STATE_DISPUTE_RULING:BUYER</command> — ruling favors buyer (refund)
-<command>STATE_DISPUTE_RULING:SELLER</command> — ruling favors seller (release)
 
 Keep responses concise. No more than 2-3 short paragraphs. Be friendly but professional.`;
 }
@@ -303,14 +371,18 @@ export function streamDealChat(
   const systemPrompt = buildDealChatPrompt(context);
   const mergedMessages = buildMergedMessages(context);
 
+  // In dispute mode, provide evidence collection tool + web_search.
+  // Dispute tools (resolveDispute) are only used in the adjudication route.
+  const isDispute = context.deal.chat_mode === "dispute";
+  const tools = isDispute
+    ? { ...disputeEvidenceTools, web_search: webSearchTool }
+    : { ...dealChatTools, web_search: webSearchTool };
+
   return streamText({
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: mergedMessages,
-    tools: {
-      ...dealChatTools,
-      web_search: webSearchTool,
-    },
+    tools,
     maxOutputTokens: 1024,
     stopWhen: stepCountIs(3),
     onFinish: onFinish
@@ -330,9 +402,14 @@ export function streamDealChat(
 
 // ─── Sell chat (streaming, returns streamText result) ────────────────
 
+interface DealCreationFinishEvent {
+  text: string;
+  toolCalls?: Array<{ toolName: string; input: unknown; output: unknown }>;
+}
+
 export function streamDealCreation(
   messages: Array<{ role: "user" | "assistant"; content: string }>,
-  onFinish?: (event: { text: string }) => void | Promise<void>
+  onFinish?: (event: DealCreationFinishEvent) => void | Promise<void>
 ) {
   const systemPrompt = buildDealCreationPrompt();
 
@@ -351,14 +428,118 @@ export function streamDealCreation(
     system: systemPrompt,
     messages: apiMessages,
     tools: {
+      ...dealCreationTools,
       web_search: webSearchTool,
     },
-    stopWhen: stepCountIs(3),
+    stopWhen: stepCountIs(5),
     maxOutputTokens: 1024,
     onFinish: onFinish
       ? async (event) => {
-          await onFinish({ text: event.text });
+          // Collect createDeal tool calls from all steps
+          const allToolCalls: Array<{ toolName: string; input: unknown; output: unknown }> = [];
+          for (const step of event.steps) {
+            for (const tc of step.staticToolCalls) {
+              allToolCalls.push({
+                toolName: tc.toolName,
+                input: tc.input,
+                output: (tc as unknown as { output: unknown }).output,
+              });
+            }
+          }
+          await onFinish({
+            text: event.text,
+            toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+          });
         }
       : undefined,
   });
+}
+
+// ─── Dispute adjudication (non-streaming, one-shot decision) ──────────
+
+export interface AdjudicationResult {
+  ruling: "BUYER" | "SELLER";
+  reasoning: string;
+}
+
+export async function adjudicateDispute(
+  deal: Deal,
+  seller: User,
+  buyer: User | null,
+  buyerMessages: Message[],
+  sellerMessages: Message[],
+  dealEvents?: DealEvent[],
+): Promise<AdjudicationResult> {
+  const priceDisplay = `$${(deal.price_cents / 100).toFixed(2)}`;
+  const today = todayFormatted();
+
+  const buyerEvidence = buyerMessages
+    .map((m) => `[${m.role === "ai" ? "Dealbay" : "Buyer"}]: ${m.content}`)
+    .join("\n");
+
+  const sellerEvidence = sellerMessages
+    .map((m) => `[${m.role === "ai" ? "Dealbay" : "Seller"}]: ${m.content}`)
+    .join("\n");
+
+  const systemPrompt = `You are adjudicating a ticket sale dispute on Dealbay. Review the evidence from both parties and issue a ruling by calling the resolveDispute tool.
+
+Today's date: ${today}
+
+DEAL CONTEXT:
+- Event: ${deal.event_name}${deal.venue ? ` at ${deal.venue}` : ""}${deal.event_date ? `, ${new Date(deal.event_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}` : ""}
+- Tickets: ${deal.num_tickets}x ${[deal.section, deal.row ? `Row ${deal.row}` : null, deal.seats ? `Seats ${deal.seats}` : null].filter(Boolean).join(", ")}
+- Price: ${priceDisplay}
+- Transfer method: ${deal.transfer_method || "unknown"}
+- Seller: ${seller.name || "Seller"}
+- Buyer: ${buyer?.name || "Buyer"}
+- Dispute filed: ${deal.disputed_at || "unknown"}
+
+DEAL TIMELINE:
+${buildDealTimeline(deal, dealEvents || [])}
+
+RULES:
+- Burden of proof is on the seller (they claimed to have specific tickets and transfer them)
+- Screenshot evidence carries more weight than text claims
+- If evidence is ambiguous or insufficient, default ruling favors buyer (refund)
+- If the seller provided no evidence or didn't respond, rule for buyer
+- If the buyer's complaint is clearly baseless (e.g. tickets were received and confirmed working), rule for seller
+- Your ruling is FINAL — explain your reasoning clearly
+
+You MUST call the resolveDispute tool with your ruling and reasoning. Do not just write text.`;
+
+  const userMessage = `BUYER'S EVIDENCE (${buyerMessages.filter((m) => m.role !== "ai").length} responses):
+${buyerEvidence || "(Buyer provided no evidence)"}
+
+---
+
+SELLER'S EVIDENCE (${sellerMessages.filter((m) => m.role !== "ai").length} responses):
+${sellerEvidence || "(Seller provided no evidence)"}
+
+---
+
+Please review the evidence and call the resolveDispute tool with your ruling.`;
+
+  const result = await generateText({
+    model: anthropic("claude-sonnet-4-5-20250929"),
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+    tools: disputeTools,
+    maxOutputTokens: 1024,
+  });
+
+  // Extract the resolveDispute tool call
+  for (const step of result.steps) {
+    for (const tc of step.staticToolCalls) {
+      if (tc.toolName === "resolveDispute") {
+        const input = tc.input as { ruling: "BUYER" | "SELLER"; reasoning: string };
+        return input;
+      }
+    }
+  }
+
+  // Fallback: if no tool call was made, default to buyer (refund)
+  return {
+    ruling: "BUYER",
+    reasoning: result.text || "Unable to reach a determination. Defaulting to refund per dispute policy.",
+  };
 }

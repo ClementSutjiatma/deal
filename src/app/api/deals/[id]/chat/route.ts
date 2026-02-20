@@ -1,10 +1,13 @@
 import { NextRequest } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { authenticateRequest } from "@/lib/auth";
-import { streamDealChat } from "@/lib/ai/agent";
+import { streamDealChat, adjudicateDispute } from "@/lib/ai/agent";
+import { resolveDisputeOnChain } from "@/lib/escrow";
+import { notifyDisputeResolved } from "@/lib/twilio";
 import type { DealContext } from "@/lib/ai/agent";
-import { CHAT_MODES } from "@/lib/constants";
+import { CHAT_MODES, DEAL_STATUSES, DISPUTE_SAFETY_CAP } from "@/lib/constants";
 import type { UIMessage } from "ai";
+import type { Message } from "@/lib/types/database";
 
 export async function POST(
   request: NextRequest,
@@ -32,7 +35,7 @@ export async function POST(
     );
   }
 
-  // Extract the latest user message text
+  // Extract the latest user message text and file URLs
   const lastUserMsg = [...uiMessages].reverse().find((m) => m.role === "user");
   const userContent = lastUserMsg
     ? lastUserMsg.parts
@@ -40,6 +43,11 @@ export async function POST(
         .map((p) => p.text)
         .join("")
     : "";
+  const fileUrls = lastUserMsg
+    ? lastUserMsg.parts
+        .filter((p): p is { type: "file"; url: string; mediaType: string } => p.type === "file" && !!(p as any).url)
+        .map((p) => p.url)
+    : [];
 
   // Fetch deal
   const { data: deal } = await (supabase
@@ -143,6 +151,16 @@ export async function POST(
   let visibility = "all";
   if (deal.chat_mode === CHAT_MODES.DISPUTE) {
     visibility = role === "seller" ? "seller_only" : "buyer_only";
+
+    // Reject new messages if this party's evidence collection is complete (done flag or safety cap)
+    const isDone = role === "buyer" ? deal.dispute_buyer_done : deal.dispute_seller_done;
+    const currentQCount = role === "buyer" ? (deal.dispute_buyer_q || 0) : (deal.dispute_seller_q || 0);
+    if (isDone || currentQCount >= DISPUTE_SAFETY_CAP) {
+      return new Response(
+        JSON.stringify({ error: "Evidence collection complete. Waiting for ruling." }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
   }
 
   // Insert user message into Supabase
@@ -155,6 +173,7 @@ export async function POST(
       role,
       content: userContent || "[message]",
       visibility,
+      media_urls: fileUrls.length > 0 ? fileUrls : null,
     });
 
   // Fetch context for AI (from Supabase, not from UIMessages — Supabase is source of truth)
@@ -195,6 +214,13 @@ export async function POST(
 
   const { data: recentMessages } = await messagesQuery as { data: any };
 
+  // Fetch deal events for timeline context (especially useful in dispute mode)
+  const { data: dealEvents } = await (supabase
+    .from("deal_events") as any)
+    .select("event_type, actor_id, metadata, created_at")
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: true }) as { data: any[] };
+
   const context: DealContext = {
     deal: deal as any,
     seller: seller as any,
@@ -202,6 +228,7 @@ export async function POST(
     recentMessages: (recentMessages || []) as any,
     senderRole: role,
     conversation: conversation as any,
+    dealEvents: (dealEvents || []) as any,
   };
 
   // Stream AI response with tools
@@ -300,7 +327,214 @@ export async function POST(
           .eq("id", resolvedConversationId);
       }
     }
+
+    // Dispute mode: track exchange count, handle evidence completion tool, trigger adjudication
+    if (deal.chat_mode === CHAT_MODES.DISPUTE) {
+      const counterField = role === "buyer" ? "dispute_buyer_q" : "dispute_seller_q";
+      const doneField = role === "buyer" ? "dispute_buyer_done" : "dispute_seller_done";
+      const currentCount = role === "buyer" ? (deal.dispute_buyer_q || 0) : (deal.dispute_seller_q || 0);
+      const newCount = currentCount + 1;
+
+      // Check if the AI called the completeEvidenceCollection tool
+      let evidenceComplete = false;
+      let evidenceSummary: string | null = null;
+      if (toolCalls) {
+        for (const tc of toolCalls) {
+          if (tc.toolName === "completeEvidenceCollection") {
+            evidenceComplete = true;
+            evidenceSummary = (tc.input as { summary?: string })?.summary || null;
+          }
+        }
+      }
+
+      // Auto-complete if safety cap reached without tool call
+      if (!evidenceComplete && newCount >= DISPUTE_SAFETY_CAP) {
+        evidenceComplete = true;
+        evidenceSummary = "Evidence collection reached safety limit.";
+      }
+
+      // Build update object
+      const updateData: Record<string, unknown> = { [counterField]: newCount };
+      if (evidenceComplete) {
+        updateData[doneField] = true;
+        // Store evidence summary in deal terms
+        const existingTerms = (deal.terms as Record<string, unknown>) || {};
+        const summaryField = role === "buyer" ? "dispute_buyer_summary" : "dispute_seller_summary";
+        updateData.terms = { ...existingTerms, [summaryField]: evidenceSummary };
+      }
+
+      await (supabase.from("deals") as any)
+        .update(updateData)
+        .eq("id", dealId);
+
+      // If evidence is complete, insert a system message explaining next steps
+      if (evidenceComplete) {
+        await (supabase.from("messages") as any).insert({
+          deal_id: dealId,
+          conversation_id: resolvedConversationId,
+          role: "ai",
+          content: "Your evidence has been submitted. We're now reviewing both sides and will issue a ruling shortly. You'll be notified of the outcome.",
+          visibility,
+        });
+      }
+
+      // Check if both sides are done — trigger adjudication
+      if (evidenceComplete) {
+        // Re-fetch deal to get latest state (avoid race condition with other party)
+        const { data: freshDeal } = await (supabase.from("deals") as any)
+          .select("dispute_buyer_done, dispute_seller_done")
+          .eq("id", dealId)
+          .single() as { data: any };
+
+        const buyerDone = role === "buyer" ? true : freshDeal?.dispute_buyer_done;
+        const sellerDone = role === "seller" ? true : freshDeal?.dispute_seller_done;
+
+        if (buyerDone && sellerDone) {
+          // Both sides done — trigger adjudication directly (no HTTP self-call
+          // which gets blocked by Vercel deployment protection on previews)
+          triggerAdjudication(dealId, resolvedConversationId, supabase).catch(
+            (err) => console.error("Adjudication failed:", err)
+          );
+        }
+      }
+    }
   });
 
   return result.toUIMessageStreamResponse();
+}
+
+/**
+ * Run AI adjudication directly (no HTTP self-call).
+ * Factored out of the adjudicate route to avoid Vercel deployment protection
+ * blocking server-to-server calls on preview deployments.
+ */
+async function triggerAdjudication(
+  dealId: string,
+  conversationId: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+) {
+  // Fetch deal
+  const { data: deal } = await (supabase
+    .from("deals") as any)
+    .select("*")
+    .eq("id", dealId)
+    .eq("status", DEAL_STATUSES.DISPUTED)
+    .single() as { data: any };
+
+  if (!deal) {
+    console.error("Adjudication: deal not found or not disputed", dealId);
+    return;
+  }
+
+  // Fetch ALL dispute messages (both buyer_only and seller_only)
+  const { data: allMessages } = await (supabase
+    .from("messages") as any)
+    .select("*")
+    .eq("deal_id", dealId)
+    .in("visibility", ["buyer_only", "seller_only"])
+    .order("created_at", { ascending: true }) as { data: Message[] };
+
+  const messages = allMessages || [];
+  const buyerMessages = messages.filter((m) => m.visibility === "buyer_only");
+  const sellerMessages = messages.filter((m) => m.visibility === "seller_only");
+
+  // Fetch users
+  const { data: seller } = await (supabase
+    .from("users") as any)
+    .select("*")
+    .eq("id", deal.seller_id)
+    .single() as { data: any };
+
+  let buyer = null;
+  if (deal.buyer_id) {
+    buyer = (await (supabase.from("users") as any).select("*").eq("id", deal.buyer_id).single() as { data: any }).data;
+  }
+
+  // Fetch deal events for timeline context
+  const { data: adjEvents } = await (supabase
+    .from("deal_events") as any)
+    .select("event_type, actor_id, metadata, created_at")
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: true }) as { data: any[] };
+
+  // Run AI adjudication
+  let ruling;
+  try {
+    ruling = await adjudicateDispute(deal, seller, buyer, buyerMessages, sellerMessages, adjEvents || []);
+  } catch (err) {
+    console.error("AI adjudication failed:", err);
+    ruling = {
+      ruling: "BUYER" as const,
+      reasoning: "Adjudication system error. Defaulting to refund per dispute policy.",
+    };
+  }
+
+  const favorBuyer = ruling.ruling === "BUYER";
+
+  // Execute on-chain resolution
+  let txHash: string | null = null;
+  try {
+    txHash = await resolveDisputeOnChain(dealId, favorBuyer);
+  } catch (err) {
+    console.error("On-chain resolve failed:", err);
+    // Still insert ruling messages so users see the result
+  }
+
+  // Update deal status
+  const newStatus = favorBuyer ? DEAL_STATUSES.REFUNDED : DEAL_STATUSES.RELEASED;
+  await (supabase.from("deals") as any)
+    .update({
+      status: newStatus,
+      resolved_at: new Date().toISOString(),
+    })
+    .eq("id", dealId);
+
+  // Log event
+  await (supabase.from("deal_events") as any).insert({
+    deal_id: dealId,
+    event_type: "resolved",
+    metadata: {
+      favor_buyer: favorBuyer,
+      tx_hash: txHash,
+      ruling: ruling.reasoning,
+      automated: true,
+    },
+  });
+
+  // Insert ruling messages for both parties
+  const rulingMeta = {
+    dispute_ruling: ruling.ruling,
+    dispute_reasoning: ruling.reasoning,
+  };
+
+  await (supabase.from("messages") as any).insert([
+    {
+      deal_id: dealId,
+      conversation_id: conversationId,
+      role: "ai",
+      content: ruling.reasoning,
+      visibility: "buyer_only",
+      metadata: rulingMeta,
+    },
+    {
+      deal_id: dealId,
+      conversation_id: conversationId,
+      role: "ai",
+      content: ruling.reasoning,
+      visibility: "seller_only",
+      metadata: rulingMeta,
+    },
+  ]);
+
+  // SMS notify both parties
+  const outcome = favorBuyer ? "Refund to buyer" : "Funds released to seller";
+  if (seller?.phone) {
+    try { await notifyDisputeResolved(seller.phone, deal.short_code, outcome); } catch {}
+  }
+  if (buyer?.phone) {
+    try { await notifyDisputeResolved(buyer.phone, deal.short_code, outcome); } catch {}
+  }
+
+  console.log(`Adjudication complete for deal ${dealId}: ${ruling.ruling}`);
 }

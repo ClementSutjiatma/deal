@@ -52,11 +52,11 @@ export function DepositPrompt({
   // Not authenticated — show "Log in to deposit" button
   if (!authenticated && onLogin) {
     return (
-      <div className="mt-2 bg-orange-50 border border-orange-200 rounded-xl p-3 space-y-2">
-        <p className="text-xs font-semibold text-orange-700">Ready to lock in this deal?</p>
+      <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
+        <p className="text-xs font-semibold text-emerald-800">Ready to lock in this deal?</p>
         <button
           onClick={onLogin}
-          className="w-full h-10 rounded-xl bg-orange-500 text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors"
+          className="w-full h-10 rounded-xl bg-emerald-600 text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-colors"
         >
           <LogIn className="w-4 h-4" />
           Log in to deposit {priceDisplay}
@@ -67,12 +67,12 @@ export function DepositPrompt({
 
   // Default: active deposit button
   return (
-    <div className="mt-2 bg-orange-50 border border-orange-200 rounded-xl p-3 space-y-2">
-      <p className="text-xs font-semibold text-orange-700">Ready to lock in this deal?</p>
+    <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-xl p-3 space-y-2">
+      <p className="text-xs font-semibold text-emerald-800">Ready to lock in this deal?</p>
       <button
         onClick={onDeposit}
         disabled={disabled || loading}
-        className="w-full h-10 rounded-xl bg-orange-500 text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
+        className="w-full h-10 rounded-xl bg-emerald-600 text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-colors disabled:opacity-50"
       >
         {loading ? (
           <>

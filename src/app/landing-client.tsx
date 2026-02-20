@@ -5,15 +5,6 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, TrendingUp, Lock, Scale } from "lucide-react";
 import { TextMorph } from "torph/react";
 
-interface Listing {
-  short_code: string;
-  event_name: string;
-  venue: string | null;
-  num_tickets: number;
-  price_cents: number;
-  created_at: string;
-}
-
 // Detect what's missing from the user's input to nudge for more detail
 function getNudge(input: string): string {
   const trimmed = input.trim().toLowerCase();
@@ -45,11 +36,7 @@ function getNudge(input: string): string {
   return `Try adding ${missing[0]} and ${missing[1]}`;
 }
 
-function formatPrice(cents: number): string {
-  return `$${(cents / 100).toFixed(0)}`;
-}
-
-export function LandingClient({ listings }: { listings: Listing[] }) {
+export function LandingClient() {
   const [input, setInput] = useState("");
   const router = useRouter();
 
@@ -66,42 +53,6 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Ticker */}
-      {listings.length > 0 && (
-        <div className="w-full overflow-hidden bg-zinc-50 border-b border-zinc-100">
-          <div className="animate-ticker flex whitespace-nowrap py-2.5">
-            {/* Duplicate the list for seamless infinite scroll */}
-            {[...listings, ...listings].map((listing, i) => (
-              <a
-                key={`${listing.short_code}-${i}`}
-                href={`/deal/${listing.short_code}`}
-                className="inline-flex items-center gap-1.5 px-4 text-xs text-zinc-400 hover:text-orange-500 transition-colors flex-shrink-0"
-              >
-                <span className="font-medium text-zinc-600">
-                  {listing.event_name}
-                </span>
-                <span className="text-zinc-300">·</span>
-                <span>{formatPrice(listing.price_cents)}</span>
-                {listing.venue && (
-                  <>
-                    <span className="text-zinc-300">·</span>
-                    <span>{listing.venue}</span>
-                  </>
-                )}
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Logo */}
-      <div className="px-6 pt-6 pb-0 max-w-lg w-full mx-auto">
-        <a href="/" className="inline-flex items-center gap-1.5 text-lg font-bold text-zinc-900">
-          <span className="text-xl">🤝</span>
-          Dealbay
-        </a>
-      </div>
-
       {/* Hero + Input */}
       <main className="flex-1 flex flex-col items-center px-6 pt-12 pb-12">
         <div className="max-w-lg w-full space-y-4">
@@ -124,12 +75,12 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
                 }}
                 placeholder="2 Taylor Swift tickets, section 204, $150 each..."
                 rows={3}
-                className="w-full resize-none rounded-2xl border border-zinc-200 bg-white px-5 py-4 pr-14 text-base outline-none placeholder:text-zinc-300 focus:border-orange-400 focus:ring-2 focus:ring-orange-400/20 transition-all"
+                className="w-full resize-none rounded-2xl border border-zinc-200 bg-white px-5 py-4 pr-14 text-base outline-none placeholder:text-zinc-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all"
               />
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="absolute right-3 bottom-3 w-10 h-10 rounded-xl bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-30 disabled:hover:bg-orange-500"
+                className="absolute right-3 bottom-3 w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors disabled:opacity-30 disabled:hover:bg-emerald-600"
               >
                 <ArrowRight className="w-4 h-4" />
               </button>
@@ -149,8 +100,8 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
         {/* Benefits */}
         <div className="max-w-lg w-full mt-16 space-y-6">
           <div className="flex gap-4 items-start">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
-              <TrendingUp className="w-4 h-4 text-orange-500" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">
@@ -163,8 +114,8 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
           </div>
 
           <div className="flex gap-4 items-start">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
-              <Lock className="w-4 h-4 text-orange-500" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <Lock className="w-4 h-4 text-emerald-600" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">
@@ -177,15 +128,15 @@ export function LandingClient({ listings }: { listings: Listing[] }) {
           </div>
 
           <div className="flex gap-4 items-start">
-            <div className="w-9 h-9 rounded-xl bg-orange-50 flex items-center justify-center flex-shrink-0">
-              <Scale className="w-4 h-4 text-orange-500" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <Scale className="w-4 h-4 text-emerald-600" />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-zinc-900">
                 Automated dispute resolution
               </h3>
               <p className="text-sm text-zinc-400 mt-0.5">
-                Evidence-based: Dealbay gathers evidence and adjudicates payment should any dispute come up.
+                Dealbay instantly handles disputes with automated evidence gathering and payment adjudication.
               </p>
             </div>
           </div>

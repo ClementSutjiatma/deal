@@ -10,6 +10,7 @@ import { Send, Paperclip, X, FileText } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
 import { TransferPrompt } from "@/components/transfer-prompt";
 import { ReceiptPrompt } from "@/components/receipt-prompt";
+import { DisputeRuling } from "@/components/dispute-ruling";
 import { MarkdownText } from "@/components/markdown-text";
 import type { Message } from "@/lib/types/database";
 
@@ -48,6 +49,8 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
   const depositCents = meta?.deposit_request_cents as number | undefined;
   const transferMethod = meta?.transfer_method as string | undefined;
   const receiptMethod = meta?.receipt_method as string | undefined;
+  const disputeRuling = meta?.dispute_ruling as string | undefined;
+  const disputeReasoning = meta?.dispute_reasoning as string | undefined;
 
   // Build parts array
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -61,6 +64,13 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
 
   if (cleanContent) {
     parts.push({ type: "text", text: cleanContent });
+  }
+
+  // Add image parts from media_urls
+  if (msg.media_urls && msg.media_urls.length > 0) {
+    for (const url of msg.media_urls) {
+      parts.push({ type: "file", mediaType: "image/jpeg", url });
+    }
   }
 
   // AI message tool parts: reconstruct from metadata
@@ -90,6 +100,15 @@ function dbMessageToUIMessage(msg: Message): UIMessage {
         state: "output-available",
         input: { transfer_method: receiptMethod },
         output: { transfer_method: receiptMethod },
+      });
+    }
+    if (disputeRuling) {
+      parts.push({
+        type: "tool-resolveDispute",
+        toolCallId: `db-ruling-${msg.id}`,
+        state: "output-available",
+        input: { ruling: disputeRuling, reasoning: disputeReasoning || "" },
+        output: { ruling: disputeRuling, reasoning: disputeReasoning || "" },
       });
     }
   }
@@ -124,6 +143,10 @@ export function Chat(props: Props) {
   const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const knownMsgIdsRef = useRef(new Set<string>());
+  // Track original DB role (buyer/seller/ai) for each message ID
+  const msgRolesRef = useRef(new Map<string, string>());
+  // Track created_at timestamps for correct ordering
+  const msgTimestampsRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     let cancelled = false;
@@ -154,8 +177,12 @@ export function Chat(props: Props) {
           const data: Message[] = await res.json();
           const uiMsgs = data.map(dbMessageToUIMessage);
 
-          // Track known IDs for deduplication
-          data.forEach((m) => knownMsgIdsRef.current.add(m.id));
+          // Track known IDs for deduplication, original roles, and timestamps
+          data.forEach((m) => {
+            knownMsgIdsRef.current.add(m.id);
+            msgRolesRef.current.set(m.id, m.role);
+            msgTimestampsRef.current.set(m.id, m.created_at);
+          });
 
           // Extract deposit requests from messages
           if (onDepositRequest) {
@@ -188,14 +215,17 @@ export function Chat(props: Props) {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   // Key ensures ChatInner unmounts/remounts when initialMessages or conversationId changes,
   // so useChat re-initializes with fresh state.
-  const chatKey = `${conversationId || "no-conv"}-${initialMessages?.length ?? 0}-${dealStatus}`;
+  // Don't include dealStatus in the key — it causes ChatInner to unmount/remount
+  // on every status change, destroying realtime subscriptions and knownMsgIds.
+  // dealStatus is passed as a prop and doesn't need to trigger full remount.
+  const chatKey = `${conversationId || "no-conv"}-${initialMessages?.length ?? 0}`;
 
   return (
     <ChatInner
@@ -203,6 +233,8 @@ export function Chat(props: Props) {
       {...props}
       initialMessages={initialMessages || undefined}
       knownMsgIds={knownMsgIdsRef}
+      msgRoles={msgRolesRef}
+      msgTimestamps={msgTimestampsRef}
     />
   );
 }
@@ -212,6 +244,8 @@ export function Chat(props: Props) {
 interface InnerProps extends Props {
   initialMessages?: UIMessage[];
   knownMsgIds: React.RefObject<Set<string>>;
+  msgRoles: React.RefObject<Map<string, string>>;
+  msgTimestamps: React.RefObject<Map<string, string>>;
 }
 
 function ChatInner({
@@ -241,6 +275,8 @@ function ChatInner({
   transferMethod,
   initialMessages,
   knownMsgIds,
+  msgRoles,
+  msgTimestamps,
 }: InnerProps) {
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -292,6 +328,27 @@ function ChatInner({
 
   const isStreaming = status === "streaming" || status === "submitted";
 
+  // Track whether we recently triggered a streaming response.
+  // Used to distinguish "our" AI messages (from useChat) vs "their" AI messages
+  // (from the other party). useChat generates client-side IDs that differ from
+  // server DB IDs, so we can't match by ID — we use a time-based heuristic.
+  const isRecentlyStreamedRef = useRef(false);
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") {
+      isRecentlyStreamedRef.current = true;
+      clearTimeout(streamTimerRef.current);
+    } else {
+      // Grace window: keep flag true for 2s after streaming ends to catch
+      // the DB-persisted version of our own AI message via realtime
+      streamTimerRef.current = setTimeout(() => {
+        isRecentlyStreamedRef.current = false;
+      }, 2000);
+    }
+    return () => clearTimeout(streamTimerRef.current);
+  }, [status]);
+
   // Subscribe to realtime for messages from OTHER users
   useEffect(() => {
     if (userRole === "buyer" && !conversationId) return;
@@ -312,23 +369,41 @@ function ChatInner({
         (payload) => {
           const newMsg = payload.new as Message;
 
+          // Track original DB role and timestamp for rendering/ordering
+          msgRoles.current.set(newMsg.id, newMsg.role);
+          msgTimestamps.current.set(newMsg.id, newMsg.created_at);
+
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
 
-          // AI messages: always allow through (dedup in merge step)
+          // Check visibility in dispute mode
+          if (chatMode === "dispute" && userId) {
+            if (newMsg.visibility === "seller_only" && userRole !== "seller") return;
+            if (newMsg.visibility === "buyer_only" && userRole !== "buyer") return;
+          }
+
+          // AI messages: distinguish between our own (from streaming) vs
+          // the other party's (which we only get via realtime).
           if (newMsg.role === "ai") {
             knownMsgIds.current.add(newMsg.id);
-            setRealtimeMessages((prev) => {
-              if (prev.some((m) => m.id === newMsg.id)) return prev;
-              return [...prev, newMsg];
-            });
 
+            // Extract deposit metadata regardless
             if (onDepositRequest) {
               const meta = newMsg.metadata as Record<string, unknown> | null;
               if (meta?.deposit_request_cents) {
                 onDepositRequest(meta.deposit_request_cents as number);
               }
             }
+
+            // If we recently triggered a streaming response, this AI message
+            // is likely our own — useChat already has it, skip to avoid dupes
+            if (isRecentlyStreamedRef.current) return;
+
+            // Not streaming → this was triggered by the other party — show it
+            setRealtimeMessages((prev) => {
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
+            });
             return;
           }
 
@@ -340,12 +415,6 @@ function ChatInner({
           if (newMsg.role === "seller" && userRole === "seller") {
             knownMsgIds.current.add(newMsg.id);
             return;
-          }
-
-          // Check visibility in dispute mode
-          if (chatMode === "dispute" && userId) {
-            if (newMsg.visibility === "seller_only" && userRole !== "seller") return;
-            if (newMsg.visibility === "buyer_only" && userRole !== "buyer") return;
           }
 
           knownMsgIds.current.add(newMsg.id);
@@ -362,7 +431,7 @@ function ChatInner({
     };
   }, [dealId, conversationId, userId, userRole, chatMode, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Merge useChat messages with realtime messages from other users
+  // Merge useChat messages with realtime messages from other users, sorted by timestamp
   const allMessages = useMemo(() => {
     const realtimeUIMsgs: UIMessage[] = realtimeMessages
       .filter((m) => !aiMessages.some((ai) => ai.id === m.id))
@@ -375,8 +444,23 @@ function ChatInner({
       }
     }
 
+    // Sort by created_at timestamp. Messages without a known timestamp
+    // (e.g. optimistic useChat messages) keep their relative position
+    // by getting a timestamp slightly after the previous known message.
+    combined.sort((a, b) => {
+      const tsA = msgTimestamps.current.get(a.id);
+      const tsB = msgTimestamps.current.get(b.id);
+      // Both have timestamps — sort chronologically
+      if (tsA && tsB) return tsA.localeCompare(tsB);
+      // Neither has timestamps — preserve original order (stable sort)
+      if (!tsA && !tsB) return 0;
+      // Only one has a timestamp — the one without is newer (optimistic)
+      if (!tsA) return 1;
+      return -1;
+    });
+
     return combined;
-  }, [aiMessages, realtimeMessages]);
+  }, [aiMessages, realtimeMessages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Find the last tool message IDs for isLatest tracking
   const { lastDepositMsgId, lastTransferMsgId, lastReceiptMsgId } = useMemo(() => {
@@ -441,10 +525,10 @@ function ChatInner({
     setPreviews((prev) => prev.filter((_, i) => i !== index));
   }
 
-  async function uploadFiles(): Promise<string[]> {
+  async function uploadFilesWithMeta(): Promise<{ url: string; mediaType: string }[]> {
     if (pendingFiles.length === 0) return [];
 
-    const urls: string[] = [];
+    const results: { url: string; mediaType: string }[] = [];
     for (const file of pendingFiles) {
       const ext = file.name.split(".").pop() || "jpg";
       const path = `${dealId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
@@ -457,10 +541,13 @@ function ChatInner({
         const { data: urlData } = supabase.storage
           .from("deal-evidence")
           .getPublicUrl(path);
-        urls.push(urlData.publicUrl);
+        results.push({
+          url: urlData.publicUrl,
+          mediaType: file.type || "image/jpeg",
+        });
       }
     }
-    return urls;
+    return results;
   }
 
   // Can send if: has a role AND (seller OR has conversationId for buyers)
@@ -470,10 +557,10 @@ function ChatInner({
     e.preventDefault();
     if ((!input.trim() && pendingFiles.length === 0) || !canSend || isStreaming) return;
 
-    // Upload images first (only for authenticated users)
-    const mediaUrls = userId ? await uploadFiles() : [];
+    // Upload images to Supabase first (only for authenticated users)
+    const uploadedFiles = userId ? await uploadFilesWithMeta() : [];
 
-    const text = input.trim() || (mediaUrls.length > 0 ? "[attachment]" : "");
+    const text = input.trim() || (uploadedFiles.length > 0 ? "[image]" : "");
     setInput("");
     setPendingFiles([]);
     previews.forEach((url) => {
@@ -481,8 +568,18 @@ function ChatInner({
     });
     setPreviews([]);
 
-    if (text) {
-      await sendMessage({ text });
+    if (text || uploadedFiles.length > 0) {
+      // Convert uploaded URLs to FileUIPart format for AI SDK
+      const fileParts = uploadedFiles.map(({ url, mediaType }) => ({
+        type: "file" as const,
+        mediaType,
+        url,
+      }));
+
+      await sendMessage({
+        text: text || "[image]",
+        ...(fileParts.length > 0 ? { files: fileParts } : {}),
+      });
     }
   }
 
@@ -491,8 +588,16 @@ function ChatInner({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {allMessages.map((msg) => {
-          const isOwnMessage = msg.role === "user";
           const isAssistant = msg.role === "assistant";
+          // Determine the original DB role for this message
+          const dbRole = msgRoles.current.get(msg.id);
+          // "Own" = sent by the current user's role. Messages from useChat
+          // (not in msgRoles) with role "user" are always own messages.
+          // DB messages: own if dbRole matches userRole.
+          const isOwnMessage = msg.role === "user" && (!dbRole || dbRole === userRole);
+          // "Other party" = the other human in the deal (not AI)
+          const isOtherParty = msg.role === "user" && dbRole && dbRole !== userRole;
+          const otherPartyLabel = dbRole === "buyer" ? "Buyer" : dbRole === "seller" ? "Seller" : null;
 
           return (
             <div
@@ -503,13 +608,18 @@ function ChatInner({
                 className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
                   isAssistant
                     ? "bg-zinc-100 text-zinc-700"
-                    : isOwnMessage
-                      ? "bg-orange-500 text-white"
-                      : "bg-zinc-200 text-zinc-900"
+                    : isOtherParty
+                      ? "bg-zinc-200 text-zinc-900"
+                      : isOwnMessage
+                        ? "bg-emerald-600 text-white"
+                        : "bg-zinc-200 text-zinc-900"
                 }`}
               >
                 {isAssistant && (
-                  <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+                  <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
+                )}
+                {isOtherParty && otherPartyLabel && (
+                  <div className="text-xs font-semibold mb-1 text-zinc-500">{otherPartyLabel}</div>
                 )}
                 {/* Render parts */}
                 {msg.parts.map((part, i) => {
@@ -520,6 +630,24 @@ function ChatInner({
                       .trim();
                     if (!cleanText) return null;
                     return <MarkdownText key={i}>{cleanText}</MarkdownText>;
+                  }
+
+                  // File/image parts (from DB media_urls or AI SDK FileUIPart)
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const fp = part as any;
+                  if (fp.type === "file" && fp.url) {
+                    const mediaType: string = fp.mediaType || "";
+                    if (mediaType.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp)$/i.test(fp.url)) {
+                      return (
+                        <img
+                          key={i}
+                          src={fp.url}
+                          alt="Uploaded image"
+                          className="mt-2 rounded-lg max-w-full max-h-64 object-contain cursor-pointer"
+                          onClick={() => window.open(fp.url, "_blank")}
+                        />
+                      );
+                    }
                   }
 
                   // Tool parts
@@ -580,6 +708,21 @@ function ChatInner({
                     );
                   }
 
+                  // Dispute ruling tool (both buyer and seller)
+                  if (p.type === "tool-resolveDispute" && isToolReady) {
+                    const rulingData = p.output ?? p.input;
+                    if (rulingData?.ruling) {
+                      return (
+                        <DisputeRuling
+                          key={i}
+                          ruling={rulingData.ruling}
+                          reasoning={rulingData.reasoning || ""}
+                          dealStatus={dealStatus}
+                        />
+                      );
+                    }
+                  }
+
                   return null;
                 })}
               </div>
@@ -591,7 +734,7 @@ function ChatInner({
         {buyerOfferAccepted && dealStatus === "OPEN" && userRole === "buyer" && !lastDepositMsgId && dealPriceCents && (onDeposit || onLogin) && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
-              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
               <DepositPrompt
                 amountCents={dealPriceCents}
                 onDeposit={onDeposit || (() => {})}
@@ -610,7 +753,7 @@ function ChatInner({
         {dealStatus === "FUNDED" && userRole === "seller" && !lastTransferMsgId && onTransfer && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
-              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
               <TransferPrompt
                 transferMethod={transferMethod || ""}
                 onTransfer={onTransfer}
@@ -627,7 +770,7 @@ function ChatInner({
         {dealStatus === "TRANSFERRED" && userRole === "buyer" && !lastReceiptMsgId && onConfirm && onDispute && (
           <div className="flex justify-start">
             <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
-              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <div className="text-xs font-semibold mb-1 text-emerald-700">Dealbay</div>
               <ReceiptPrompt
                 transferMethod={transferMethod || ""}
                 onConfirm={onConfirm}
@@ -658,7 +801,22 @@ function ChatInner({
         <div ref={bottomRef} />
       </div>
 
-      {/* Pending file previews */}
+      {/* Waiting for Ruling banner (when evidence collection is done but no ruling yet) */}
+      {disabled && chatMode === "dispute" && dealStatus === "DISPUTED" && (
+        <div className="px-4 py-4 border-t border-zinc-200 bg-amber-50">
+          <div className="flex items-start gap-3">
+            <span className="text-xl flex-shrink-0 mt-0.5">⚖️</span>
+            <div>
+              <p className="text-sm font-semibold text-zinc-900">Evidence Submitted</p>
+              <p className="text-sm text-zinc-600 mt-1">
+                Your evidence has been submitted. We&apos;re now reviewing both sides and will issue a ruling shortly. You&apos;ll be notified of the outcome.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pending image previews */}
       {previews.length > 0 && (
         <div className="px-4 py-2 border-t border-zinc-100 flex gap-2 overflow-x-auto">
           {previews.map((url, i) => (
@@ -705,7 +863,7 @@ function ChatInner({
               onClick={() => fileInputRef.current?.click()}
               className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
                 pendingFiles.length > 0
-                  ? "bg-orange-100 text-orange-600"
+                  ? "bg-emerald-100 text-emerald-700"
                   : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
               }`}
               disabled={isStreaming}
@@ -718,13 +876,13 @@ function ChatInner({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={placeholder || "Type a message..."}
-            className="flex-1 h-10 px-4 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-orange-500/50"
+            className="flex-1 h-10 px-4 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-emerald-600/50"
             disabled={isStreaming}
           />
           <button
             type="submit"
             disabled={(!input.trim() && pendingFiles.length === 0) || isStreaming}
-            className="w-10 h-10 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
+            className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-700 transition-colors disabled:opacity-50"
           >
             <Send className="w-4 h-4" />
           </button>

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { triggerRefund, triggerAutoRelease } from "@/lib/escrow";
 import { notifyAutoRefund, notifyAutoRelease } from "@/lib/twilio";
-import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, DEAL_EXPIRY_TIMEOUT } from "@/lib/constants";
+import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, DEAL_EXPIRY_TIMEOUT, DISPUTE_INACTIVITY_TIMEOUT } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -103,7 +103,40 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // 3. Expire: OPEN deals older than 7 days
+  // 3. Auto-adjudicate: DISPUTED deals past 24-hour inactivity timeout
+  const disputeCutoff = new Date(now.getTime() - DISPUTE_INACTIVITY_TIMEOUT * 1000).toISOString();
+  const { data: expiredDisputes } = await (supabase
+    .from("deals") as any)
+    .select("id, short_code")
+    .eq("status", DEAL_STATUSES.DISPUTED)
+    .lt("disputed_at", disputeCutoff) as { data: any };
+
+  for (const deal of expiredDisputes || []) {
+    try {
+      // Trigger adjudication via internal API
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "http://localhost:3000");
+      const res = await fetch(`${baseUrl}/api/deals/${deal.id}/adjudicate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-secret": process.env.INTERNAL_API_SECRET || "",
+        },
+      });
+
+      if (res.ok) {
+        results.push(`Adjudicated dispute for deal ${deal.short_code}`);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        results.push(`Failed to adjudicate deal ${deal.short_code}: ${data.error || res.status}`);
+      }
+    } catch (e) {
+      results.push(`Failed to adjudicate deal ${deal.short_code}: ${e}`);
+    }
+  }
+
+  // 4. Expire: OPEN deals older than 7 days
   const expiryCutoff = new Date(now.getTime() - DEAL_EXPIRY_TIMEOUT * 1000).toISOString();
   const { data: expiredOpen } = await (supabase
     .from("deals") as any)

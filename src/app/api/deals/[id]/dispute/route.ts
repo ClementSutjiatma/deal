@@ -54,7 +54,7 @@ export async function POST(
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
-  // Update deal
+  // Update deal (reset question counters for dispute flow)
   const { error } = await (supabase
     .from("deals") as any)
     .update({
@@ -62,6 +62,10 @@ export async function POST(
       disputed_at: new Date().toISOString(),
       chat_mode: CHAT_MODES.DISPUTE,
       dispute_tx_hash,
+      dispute_buyer_q: 0,
+      dispute_seller_q: 0,
+      dispute_buyer_done: false,
+      dispute_seller_done: false,
     })
     .eq("id", id);
 
@@ -77,19 +81,30 @@ export async function POST(
     metadata: { dispute_tx_hash },
   });
 
+  // Look up the buyer's conversation for message scoping
+  const { data: conv } = await (supabase
+    .from("conversations") as any)
+    .select("id")
+    .eq("deal_id", id)
+    .eq("buyer_id", deal.buyer_id)
+    .single() as { data: any };
+  const convId = conv?.id || null;
+
   // AI message to buyer (buyer_only)
   await (supabase.from("messages") as any).insert({
     deal_id: id,
+    conversation_id: convId,
     role: "ai",
-    content: "What's the issue?\n1. Tickets not received\n2. Wrong tickets (wrong section, date, event)\n3. Tickets don't work (barcode invalid, already used)\n4. Other\n\nPlease describe the problem and upload a screenshot if possible.",
+    content: "A dispute has been filed. I'll be collecting evidence from both you and the seller separately — neither side can see the other's messages.\n\nWhat's the issue?\n1. Tickets not received\n2. Wrong tickets (wrong section, date, event)\n3. Tickets don't work (barcode invalid, already used)\n4. Other\n\nPlease describe the problem and upload a screenshot if possible.",
     visibility: "buyer_only",
   });
 
   // AI message to seller (seller_only)
   await (supabase.from("messages") as any).insert({
     deal_id: id,
+    conversation_id: convId,
     role: "ai",
-    content: "Buyer has raised an issue about the tickets. Please upload screenshots of:\n1. Your original purchase confirmation\n2. The transfer confirmation\n\nYou have 4 hours to respond with evidence.",
+    content: "The buyer has filed a dispute about this deal. I'll be collecting evidence from both sides separately — neither side can see the other's messages.\n\nPlease upload screenshots of:\n1. Your original purchase confirmation\n2. The transfer confirmation\n\nYour evidence will help us resolve this fairly.",
     visibility: "seller_only",
   });
 

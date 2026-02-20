@@ -81,7 +81,7 @@ export function SellerDashboard({ dealId, sellerId, onSelectConversation }: Prop
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+        <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -123,7 +123,7 @@ export function SellerDashboard({ dealId, sellerId, onSelectConversation }: Prop
               className="w-full px-4 py-3 flex items-center gap-3 hover:bg-zinc-50 transition-colors text-left"
             >
               {/* Avatar */}
-              <div className="w-10 h-10 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center text-sm font-semibold flex-shrink-0">
+              <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-sm font-semibold flex-shrink-0">
                 {buyerName.charAt(0).toUpperCase()}
               </div>
 
@@ -140,7 +140,7 @@ export function SellerDashboard({ dealId, sellerId, onSelectConversation }: Prop
                           ? "bg-green-100 text-green-700"
                           : conv.status === "closed"
                             ? "bg-zinc-100 text-zinc-500"
-                            : "bg-orange-100 text-orange-700"
+                            : "bg-emerald-100 text-emerald-800"
                       }`}
                     >
                       {statusBadge}

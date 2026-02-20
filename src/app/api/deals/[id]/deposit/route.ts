@@ -4,7 +4,7 @@ import { authenticateRequest } from "@/lib/auth";
 import { getEmbeddedWalletId } from "@/lib/privy";
 import { sponsoredApproveAndDeposit } from "@/lib/escrow";
 import { notifyDeposit } from "@/lib/twilio";
-import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, MAX_DISCOUNT_FRACTION, CONVERSATION_STATUSES } from "@/lib/constants";
+import { DEAL_STATUSES, SELLER_TRANSFER_TIMEOUT, BUYER_CONFIRM_TIMEOUT, CONVERSATION_STATUSES } from "@/lib/constants";
 import type { Address } from "viem";
 
 export async function POST(
@@ -51,9 +51,12 @@ export async function POST(
     return NextResponse.json({ error: "Buyer wallet not configured" }, { status: 400 });
   }
 
-  // Determine price: use negotiated price from conversation if available
+  // Determine price: use negotiated price from conversation or deal terms.
+  // The seller sets a MINIMUM price (deal.price_cents). Buyers offer at or above it.
+  // The negotiated price can be higher than the listed minimum — that's expected.
   let priceCents = deal.price_cents;
 
+  // First try conversation's negotiated price
   if (conversation_id) {
     const { data: conv } = await (supabase
       .from("conversations") as any)
@@ -61,11 +64,19 @@ export async function POST(
       .eq("id", conversation_id)
       .single() as { data: any };
 
-    if (conv?.negotiated_price_cents) {
-      const minPrice = Math.round(deal.price_cents * (1 - MAX_DISCOUNT_FRACTION));
-      if (conv.negotiated_price_cents >= minPrice && conv.negotiated_price_cents <= deal.price_cents) {
-        priceCents = conv.negotiated_price_cents;
-      }
+    if (conv?.negotiated_price_cents && conv.negotiated_price_cents >= deal.price_cents) {
+      priceCents = conv.negotiated_price_cents;
+    }
+  }
+
+  // Fallback: check deal.terms.buyer_offer_cents (set when AI accepts an offer).
+  // This covers cases where the conversation's negotiated_price wasn't set
+  // (e.g. anonymous→authenticated user conversation mismatch).
+  const terms = deal.terms as Record<string, unknown> | null;
+  if (priceCents === deal.price_cents && terms?.buyer_offer_accepted && terms?.buyer_offer_cents) {
+    const offerCents = terms.buyer_offer_cents as number;
+    if (offerCents >= deal.price_cents) {
+      priceCents = offerCents;
     }
   }
 

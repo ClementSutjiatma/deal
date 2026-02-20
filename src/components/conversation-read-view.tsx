@@ -90,7 +90,7 @@ export function ConversationReadView({ dealId, conversationId, buyerName, onBack
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {loading ? (
           <div className="flex items-center justify-center py-8">
-            <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+            <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : messages.length === 0 ? (
           <p className="text-center text-sm text-zinc-400 py-8">No messages yet</p>
@@ -118,11 +118,11 @@ export function ConversationReadView({ dealId, conversationId, buyerName, onBack
                     <div className="text-xs font-semibold mb-1 opacity-70">{buyerName}</div>
                   )}
                   {msg.role === "ai" && (
-                    <div className="text-xs font-semibold mb-1 text-orange-600">AI Agent</div>
+                    <div className="text-xs font-semibold mb-1 text-emerald-700">AI Agent</div>
                   )}
                   <div className="whitespace-pre-wrap">{displayContent}</div>
                   {depositCents && (
-                    <div className="mt-2 text-xs bg-orange-50 text-orange-700 rounded-lg px-2 py-1 border border-orange-200">
+                    <div className="mt-2 text-xs bg-emerald-50 text-emerald-800 rounded-lg px-2 py-1 border border-emerald-200">
                       Deposit prompted: ${(depositCents / 100).toFixed(2)}
                     </div>
                   )}
