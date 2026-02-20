@@ -481,6 +481,23 @@ export async function adjudicateDispute(
     .map((m) => `[${m.role === "ai" ? "Dealbay" : "Seller"}]: ${m.content}`)
     .join("\n");
 
+  // Collect image URLs from both parties' messages for multimodal adjudication
+  const allImageUrls: { url: string; party: string }[] = [];
+  for (const m of buyerMessages) {
+    if (m.media_urls) {
+      for (const url of m.media_urls) {
+        allImageUrls.push({ url, party: "Buyer" });
+      }
+    }
+  }
+  for (const m of sellerMessages) {
+    if (m.media_urls) {
+      for (const url of m.media_urls) {
+        allImageUrls.push({ url, party: "Seller" });
+      }
+    }
+  }
+
   const systemPrompt = `You are adjudicating a ticket sale dispute on Dealbay. Review the evidence from both parties and issue a ruling by calling the resolveDispute tool.
 
 Today's date: ${today}
@@ -507,7 +524,7 @@ RULES:
 
 You MUST call the resolveDispute tool with your ruling and reasoning. Do not just write text.`;
 
-  const userMessage = `BUYER'S EVIDENCE (${buyerMessages.filter((m) => m.role !== "ai").length} responses):
+  const userMessageText = `BUYER'S EVIDENCE (${buyerMessages.filter((m) => m.role !== "ai").length} responses):
 ${buyerEvidence || "(Buyer provided no evidence)"}
 
 ---
@@ -519,12 +536,23 @@ ${sellerEvidence || "(Seller provided no evidence)"}
 
 Please review the evidence and call the resolveDispute tool with your ruling.`;
 
+  // Build multimodal content with text + any uploaded images
+  const userContent: Array<{ type: "text"; text: string } | { type: "image"; image: URL }> = [
+    { type: "text", text: userMessageText },
+  ];
+  for (const img of allImageUrls) {
+    userContent.push(
+      { type: "text", text: `[Screenshot from ${img.party}]:` },
+      { type: "image", image: new URL(img.url) },
+    );
+  }
+
   const result = await generateText({
-    model: anthropic("claude-haiku-3-5-20241022"),
+    model: anthropic("claude-opus-4-6"),
     system: systemPrompt,
-    messages: [{ role: "user", content: userMessage }],
+    messages: [{ role: "user", content: userContent }],
     tools: disputeTools,
-    maxOutputTokens: 512,
+    maxOutputTokens: 1024,
   });
 
   // Extract the resolveDispute tool call
