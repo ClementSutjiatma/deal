@@ -222,7 +222,10 @@ export function Chat(props: Props) {
 
   // Key ensures ChatInner unmounts/remounts when initialMessages or conversationId changes,
   // so useChat re-initializes with fresh state.
-  const chatKey = `${conversationId || "no-conv"}-${initialMessages?.length ?? 0}-${dealStatus}`;
+  // Don't include dealStatus in the key — it causes ChatInner to unmount/remount
+  // on every status change, destroying realtime subscriptions and knownMsgIds.
+  // dealStatus is passed as a prop and doesn't need to trigger full remount.
+  const chatKey = `${conversationId || "no-conv"}-${initialMessages?.length ?? 0}`;
 
   return (
     <ChatInner
@@ -325,6 +328,27 @@ function ChatInner({
 
   const isStreaming = status === "streaming" || status === "submitted";
 
+  // Track whether we recently triggered a streaming response.
+  // Used to distinguish "our" AI messages (from useChat) vs "their" AI messages
+  // (from the other party). useChat generates client-side IDs that differ from
+  // server DB IDs, so we can't match by ID — we use a time-based heuristic.
+  const isRecentlyStreamedRef = useRef(false);
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") {
+      isRecentlyStreamedRef.current = true;
+      clearTimeout(streamTimerRef.current);
+    } else {
+      // Grace window: keep flag true for 2s after streaming ends to catch
+      // the DB-persisted version of our own AI message via realtime
+      streamTimerRef.current = setTimeout(() => {
+        isRecentlyStreamedRef.current = false;
+      }, 2000);
+    }
+    return () => clearTimeout(streamTimerRef.current);
+  }, [status]);
+
   // Subscribe to realtime for messages from OTHER users
   useEffect(() => {
     if (userRole === "buyer" && !conversationId) return;
@@ -352,39 +376,34 @@ function ChatInner({
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
 
-          // AI messages: only pass through for roles that DON'T receive
-          // the AI response via useChat streaming (e.g. seller viewing
-          // a buyer conversation in post-OPEN states). When the current
-          // user triggered the AI response, useChat already has it —
-          // adding it again via realtime causes duplicates because the
-          // server-generated DB ID differs from the client-side ID.
+          // Check visibility in dispute mode
+          if (chatMode === "dispute" && userId) {
+            if (newMsg.visibility === "seller_only" && userRole !== "seller") return;
+            if (newMsg.visibility === "buyer_only" && userRole !== "buyer") return;
+          }
+
+          // AI messages: distinguish between our own (from streaming) vs
+          // the other party's (which we only get via realtime).
           if (newMsg.role === "ai") {
-            // Seller in post-OPEN sees AI messages via realtime (not streaming)
-            const sellerObserving = userRole === "seller";
-            if (!sellerObserving) {
-              knownMsgIds.current.add(newMsg.id);
-              // Still extract deposit metadata even though we skip display
-              if (onDepositRequest) {
-                const meta = newMsg.metadata as Record<string, unknown> | null;
-                if (meta?.deposit_request_cents) {
-                  onDepositRequest(meta.deposit_request_cents as number);
-                }
-              }
-              return; // useChat already has this message from streaming
-            }
-
             knownMsgIds.current.add(newMsg.id);
-            setRealtimeMessages((prev) => {
-              if (prev.some((m) => m.id === newMsg.id)) return prev;
-              return [...prev, newMsg];
-            });
 
+            // Extract deposit metadata regardless
             if (onDepositRequest) {
               const meta = newMsg.metadata as Record<string, unknown> | null;
               if (meta?.deposit_request_cents) {
                 onDepositRequest(meta.deposit_request_cents as number);
               }
             }
+
+            // If we recently triggered a streaming response, this AI message
+            // is likely our own — useChat already has it, skip to avoid dupes
+            if (isRecentlyStreamedRef.current) return;
+
+            // Not streaming → this was triggered by the other party — show it
+            setRealtimeMessages((prev) => {
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              return [...prev, newMsg];
+            });
             return;
           }
 
@@ -396,12 +415,6 @@ function ChatInner({
           if (newMsg.role === "seller" && userRole === "seller") {
             knownMsgIds.current.add(newMsg.id);
             return;
-          }
-
-          // Check visibility in dispute mode
-          if (chatMode === "dispute" && userId) {
-            if (newMsg.visibility === "seller_only" && userRole !== "seller") return;
-            if (newMsg.visibility === "buyer_only" && userRole !== "buyer") return;
           }
 
           knownMsgIds.current.add(newMsg.id);

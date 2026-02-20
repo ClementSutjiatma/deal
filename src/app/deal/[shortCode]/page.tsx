@@ -109,6 +109,34 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
     return () => clearInterval(interval);
   }, [fetchDeal]);
 
+  // Realtime subscription for deal updates (status changes, dispute flags, etc.)
+  // This makes transitions like FUNDED → TRANSFERRED → DISPUTED → RESOLVED near-instant
+  // instead of waiting for the 10-second polling fallback.
+  useEffect(() => {
+    if (!deal) return;
+
+    const channel = supabase
+      .channel(`deal:${deal.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "deals",
+          filter: `id=eq.${deal.id}`,
+        },
+        (payload) => {
+          const updated = payload.new as Record<string, unknown>;
+          setDeal((prev) => prev ? { ...prev, ...updated } as typeof prev : prev);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [deal?.id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Sync Privy user -> app user (populates privy_wallet_id, wallet_address, etc.)
   const [hasSynced, setHasSynced] = useState(false);
   useEffect(() => {
