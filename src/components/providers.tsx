@@ -33,6 +33,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
     const phone = privyUser.phone?.number || null;
     const email = privyUser.email?.address || null;
     const walletAddress = privyUser.wallet?.address;
+
+    // Extract Privy wallet ID from linked accounts (embedded wallet)
+    const embeddedWallet = privyUser.linkedAccounts?.find(
+      (a: any) => a.type === "wallet" && a.walletClientType === "privy"
+    );
+    const privyWalletId = embeddedWallet?.id || null;
+
     if (!phone && !email) return;
 
     try {
@@ -45,7 +52,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({
           phone,
           email,
-          wallet_address: walletAddress,
+          wallet_address: walletAddress || embeddedWallet?.address,
+          privy_wallet_id: privyWalletId,
           name: user?.name,
         }),
       });

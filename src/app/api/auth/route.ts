@@ -28,6 +28,7 @@ export async function POST(request: NextRequest) {
   const email = (body.email as string) || null;
   const name = (body.name as string) || null;
   const wallet_address = (body.wallet_address as string) || null;
+  const privy_wallet_id = (body.privy_wallet_id as string) || null;
 
   if (!phone && !email) {
     return NextResponse.json(
@@ -51,6 +52,7 @@ export async function POST(request: NextRequest) {
         ...(email && { email, email_verified_at: new Date().toISOString() }),
         name: name || existing.name,
         wallet_address: wallet_address || existing.wallet_address,
+        privy_wallet_id: privy_wallet_id || existing.privy_wallet_id,
       })
       .eq("id", existing.id)
       .select()
@@ -70,6 +72,7 @@ export async function POST(request: NextRequest) {
       email,
       name,
       wallet_address,
+      privy_wallet_id,
       ...(phone && { phone_verified_at: new Date().toISOString() }),
       ...(email && { email_verified_at: new Date().toISOString() }),
     })
