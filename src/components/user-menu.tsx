@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 import {
   ChevronDown,
+  ChevronRight,
   LogOut,
   Copy,
   Check,
@@ -190,27 +191,33 @@ export function UserMenu() {
           {/* Wallet address + balance */}
           {user?.wallet_address && (
             <div className="border-b border-zinc-100">
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(user.wallet_address!);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 2000);
-                }}
-                className="w-full px-4 py-2 text-xs text-zinc-500 hover:bg-zinc-50 flex items-center gap-2 transition-colors"
-              >
-                {copied ? (
-                  <Check className="w-3 h-3 text-green-500 flex-shrink-0" />
-                ) : (
-                  <Copy className="w-3 h-3 flex-shrink-0" />
-                )}
-                <span className="truncate font-mono">
-                  {user.wallet_address.slice(0, 6)}...
-                  {user.wallet_address.slice(-4)}
-                </span>
-              </button>
+              <div className="flex items-center">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(user.wallet_address!);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  }}
+                  className="flex-1 px-4 py-2 text-xs text-zinc-500 hover:bg-zinc-50 flex items-center gap-2 transition-colors"
+                >
+                  {copied ? (
+                    <Check className="w-3 h-3 text-green-500 flex-shrink-0" />
+                  ) : (
+                    <Copy className="w-3 h-3 flex-shrink-0" />
+                  )}
+                  <span className="truncate font-mono">
+                    {user.wallet_address.slice(0, 6)}...
+                    {user.wallet_address.slice(-4)}
+                  </span>
+                </button>
+              </div>
 
-              {/* Balance row */}
-              <div className="px-4 py-2 flex items-center justify-between">
+              {/* Balance row — links to /wallet */}
+              <Link
+                href="/wallet"
+                onClick={() => setOpen(false)}
+                className="px-4 py-2 flex items-center justify-between hover:bg-zinc-50 transition-colors"
+              >
                 <span className="flex items-center gap-1.5 text-xs text-zinc-600">
                   <Wallet className="w-3 h-3 text-zinc-400" />
                   <span className="font-medium">
@@ -224,9 +231,13 @@ export function UserMenu() {
                 </span>
 
                 {/* Cash out button (mainnet only, when balance > 0) */}
-                {!isTestnet && hasBalance && (
+                {!isTestnet && hasBalance ? (
                   <button
-                    onClick={handleCashout}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleCashout();
+                    }}
                     disabled={cashoutLoading}
                     className="flex items-center gap-1 px-2 py-1 rounded-lg bg-green-50 text-green-700 text-[11px] font-semibold hover:bg-green-100 transition-colors disabled:opacity-50"
                   >
@@ -239,8 +250,10 @@ export function UserMenu() {
                       </>
                     )}
                   </button>
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 text-zinc-300" />
                 )}
-              </div>
+              </Link>
             </div>
           )}
 
