@@ -1,17 +1,5 @@
-import { createServiceClient } from "@/lib/supabase/server";
 import { LandingClient } from "./landing-client";
 
-export const dynamic = "force-dynamic";
-
-export default async function Home() {
-  const supabase = createServiceClient();
-
-  const { data } = await supabase
-    .from("deals")
-    .select("short_code, event_name, venue, num_tickets, price_cents, created_at")
-    .eq("status", "OPEN")
-    .order("created_at", { ascending: false })
-    .limit(12);
-
-  return <LandingClient listings={data ?? []} />;
+export default function Home() {
+  return <LandingClient />;
 }

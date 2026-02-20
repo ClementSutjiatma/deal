@@ -6,7 +6,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("deals")
-    .select("short_code, event_name, venue, num_tickets, price_cents, created_at")
+    .select("short_code, event_name, venue, section, num_tickets, price_cents, created_at")
     .eq("status", "OPEN")
     .order("created_at", { ascending: false })
     .limit(12);
