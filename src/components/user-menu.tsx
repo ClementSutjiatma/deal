@@ -199,7 +199,7 @@ export function UserMenu() {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-lg border border-zinc-200 overflow-hidden">
+        <div className="absolute top-full right-0 mt-2 w-72 bg-white rounded-xl shadow-lg border border-zinc-200 overflow-hidden max-h-[calc(100dvh-4rem)] overflow-y-auto">
           {/* Account info */}
           {(privyUser?.phone?.number || privyUser?.email?.address) && (
             <div className="px-4 py-2 text-xs text-zinc-400 border-b border-zinc-100">
