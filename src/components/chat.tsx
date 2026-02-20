@@ -8,6 +8,8 @@ import type { UIMessage } from "ai";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
+import { TransferPrompt } from "@/components/transfer-prompt";
+import { ReceiptPrompt } from "@/components/receipt-prompt";
 import { MarkdownText } from "@/components/markdown-text";
 import type { Message } from "@/lib/types/database";
 
@@ -29,6 +31,15 @@ interface Props {
   dealStatus?: string;
   dealPriceCents?: number;
   buyerOfferAccepted?: boolean;
+  // Transfer flow (seller)
+  onTransfer?: () => void;
+  transferLoading?: boolean;
+  // Confirm/dispute flow (buyer)
+  onConfirm?: () => void;
+  onDispute?: () => void;
+  confirmLoading?: boolean;
+  disputeLoading?: boolean;
+  transferMethod?: string;
 }
 
 /** Convert a Supabase Message to AI SDK UIMessage format */
@@ -86,6 +97,13 @@ export function Chat({
   dealStatus,
   dealPriceCents,
   buyerOfferAccepted,
+  onTransfer,
+  transferLoading,
+  onConfirm,
+  onDispute,
+  confirmLoading,
+  disputeLoading,
+  transferMethod,
 }: Props) {
   const { getAccessToken } = usePrivy();
   const [input, setInput] = useState("");
@@ -282,20 +300,25 @@ export function Chat({
     return combined;
   }, [aiMessages, realtimeMessages]);
 
-  // Find the last deposit message for isLatest tracking
-  const lastDepositMsgId = useMemo(() => {
+  // Find the last tool message IDs for isLatest tracking
+  const { lastDepositMsgId, lastTransferMsgId, lastReceiptMsgId } = useMemo(() => {
+    let deposit: string | null = null;
+    let transfer: string | null = null;
+    let receipt: string | null = null;
     for (let i = allMessages.length - 1; i >= 0; i--) {
       const msg = allMessages[i];
       if (msg.role === "assistant") {
         for (const part of msg.parts) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if ((part as any).type === "tool-requestDeposit") {
-            return msg.id;
-          }
+          const p = part as any;
+          if (!deposit && p.type === "tool-requestDeposit") deposit = msg.id;
+          if (!transfer && p.type === "tool-confirmTransfer") transfer = msg.id;
+          if (!receipt && p.type === "tool-confirmReceipt") receipt = msg.id;
         }
       }
+      if (deposit && transfer && receipt) break;
     }
-    return null;
+    return { lastDepositMsgId: deposit, lastTransferMsgId: transfer, lastReceiptMsgId: receipt };
   }, [allMessages]);
 
   // Auto-scroll
@@ -423,18 +446,15 @@ export function Chat({
                     return <MarkdownText key={i}>{cleanText}</MarkdownText>;
                   }
 
-                  // Tool part: requestDeposit
+                  // Tool parts: requestDeposit, confirmTransfer, confirmReceipt
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   const p = part as any;
-                  if (
-                    p.type === "tool-requestDeposit" &&
-                    (p.state === "output-available" || p.state === "input-available") &&
-                    userRole === "buyer" &&
-                    (onDeposit || onLogin)
-                  ) {
+                  const isToolReady = p.state === "output-available" || p.state === "input-available";
+
+                  // Deposit tool (buyer only)
+                  if (p.type === "tool-requestDeposit" && isToolReady && userRole === "buyer" && (onDeposit || onLogin)) {
                     const amountCents = p.output?.amount_cents ?? p.input?.amount_cents;
                     if (!amountCents) return null;
-
                     return (
                       <DepositPrompt
                         key={i}
@@ -446,6 +466,40 @@ export function Chat({
                         onLogin={onLogin}
                         dealStatus={dealStatus}
                         isLatest={msg.id === lastDepositMsgId}
+                      />
+                    );
+                  }
+
+                  // Transfer tool (seller only)
+                  if (p.type === "tool-confirmTransfer" && isToolReady && userRole === "seller" && onTransfer) {
+                    const method = p.output?.transfer_method ?? p.input?.transfer_method ?? transferMethod;
+                    return (
+                      <TransferPrompt
+                        key={i}
+                        transferMethod={method || ""}
+                        onTransfer={onTransfer}
+                        disabled={disabled}
+                        loading={transferLoading}
+                        dealStatus={dealStatus}
+                        isLatest={msg.id === lastTransferMsgId}
+                      />
+                    );
+                  }
+
+                  // Receipt tool (buyer only)
+                  if (p.type === "tool-confirmReceipt" && isToolReady && userRole === "buyer" && onConfirm && onDispute) {
+                    const method = p.output?.transfer_method ?? p.input?.transfer_method ?? transferMethod;
+                    return (
+                      <ReceiptPrompt
+                        key={i}
+                        transferMethod={method || ""}
+                        onConfirm={onConfirm}
+                        onDispute={onDispute}
+                        disabled={disabled}
+                        confirmLoading={confirmLoading}
+                        disputeLoading={disputeLoading}
+                        dealStatus={dealStatus}
+                        isLatest={msg.id === lastReceiptMsgId}
                       />
                     );
                   }
@@ -469,6 +523,42 @@ export function Chat({
                 loading={depositLoading}
                 authenticated={authenticated}
                 onLogin={onLogin}
+                dealStatus={dealStatus}
+                isLatest={true}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Fallback transfer prompt: show when FUNDED, seller is in chat, no tool call yet */}
+        {dealStatus === "FUNDED" && userRole === "seller" && !lastTransferMsgId && onTransfer && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
+              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <TransferPrompt
+                transferMethod={transferMethod || ""}
+                onTransfer={onTransfer}
+                disabled={disabled}
+                loading={transferLoading}
+                dealStatus={dealStatus}
+                isLatest={true}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Fallback receipt prompt: show when TRANSFERRED, buyer is in chat, no tool call yet */}
+        {dealStatus === "TRANSFERRED" && userRole === "buyer" && !lastReceiptMsgId && onConfirm && onDispute && (
+          <div className="flex justify-start">
+            <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm bg-zinc-100 text-zinc-700">
+              <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+              <ReceiptPrompt
+                transferMethod={transferMethod || ""}
+                onConfirm={onConfirm}
+                onDispute={onDispute}
+                disabled={disabled}
+                confirmLoading={confirmLoading}
+                disputeLoading={disputeLoading}
                 dealStatus={dealStatus}
                 isLatest={true}
               />

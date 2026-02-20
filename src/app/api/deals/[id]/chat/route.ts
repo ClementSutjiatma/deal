@@ -236,9 +236,11 @@ export async function POST(
     }
 
     // Only insert AI message if there's actual content or a deposit request.
-    // Tool-only responses (e.g. requestDeposit) produce empty text —
+    // Tool-only responses produce empty text —
     // storing these as empty messages breaks the conversation history.
-    if (cleanContent || depositRequestCents) {
+    // But we do want to store a placeholder if a meaningful tool was called.
+    const hasContent = !!cleanContent || !!depositRequestCents;
+    if (hasContent) {
       await (supabase
         .from("messages") as any)
         .insert({

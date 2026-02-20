@@ -614,6 +614,13 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             dealStatus={deal.status}
             dealPriceCents={effectivePrice}
             buyerOfferAccepted={buyerOfferAccepted}
+            onTransfer={handleTransfer}
+            transferLoading={escrow.isLoading && escrow.step === "transferring"}
+            onConfirm={handleConfirm}
+            onDispute={handleDispute}
+            confirmLoading={escrow.isLoading && escrow.step === "confirming"}
+            disputeLoading={escrow.isLoading && escrow.step === "disputing"}
+            transferMethod={deal.transfer_method || ""}
           />
         )}
       </div>
@@ -671,61 +678,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             );
           })()}
 
-          {deal.status === "FUNDED" && isSeller && (
-            <button
-              onClick={handleTransfer}
-              disabled={escrow.isLoading}
-              className="w-full h-14 rounded-2xl bg-blue-500 text-white font-semibold flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors disabled:opacity-50"
-            >
-              {escrow.isLoading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  {STEP_LABELS[escrow.step]}
-                </>
-              ) : (
-                "I've transferred the tickets"
-              )}
-            </button>
-          )}
-
-          {deal.status === "TRANSFERRED" && isBuyer && (
-            <>
-              <button
-                onClick={handleConfirm}
-                disabled={escrow.isLoading}
-                className="w-full h-12 rounded-2xl bg-green-500 text-white font-semibold flex items-center justify-center gap-2 hover:bg-green-600 transition-colors disabled:opacity-50"
-              >
-                {escrow.isLoading && escrow.step === "confirming" ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    Releasing funds...
-                  </>
-                ) : (
-                  <>
-                    <Check className="w-5 h-5" />
-                    Got them -- release funds
-                  </>
-                )}
-              </button>
-              <button
-                onClick={handleDispute}
-                disabled={escrow.isLoading}
-                className="w-full h-12 rounded-2xl bg-zinc-100 text-zinc-700 font-semibold flex items-center justify-center gap-2 hover:bg-zinc-200 transition-colors disabled:opacity-50"
-              >
-                {escrow.isLoading && escrow.step === "disputing" ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Filing dispute...
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle className="w-4 h-4" />
-                    Something&apos;s wrong
-                  </>
-                )}
-              </button>
-            </>
-          )}
+          {/* Transfer and confirm/dispute buttons moved inline to chat via tools */}
         </div>
       )}
     </div>
