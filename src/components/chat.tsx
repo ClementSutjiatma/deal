@@ -124,6 +124,8 @@ export function Chat(props: Props) {
   const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const knownMsgIdsRef = useRef(new Set<string>());
+  // Track original DB role (buyer/seller/ai) for each message ID
+  const msgRolesRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     let cancelled = false;
@@ -154,8 +156,11 @@ export function Chat(props: Props) {
           const data: Message[] = await res.json();
           const uiMsgs = data.map(dbMessageToUIMessage);
 
-          // Track known IDs for deduplication
-          data.forEach((m) => knownMsgIdsRef.current.add(m.id));
+          // Track known IDs for deduplication and original roles
+          data.forEach((m) => {
+            knownMsgIdsRef.current.add(m.id);
+            msgRolesRef.current.set(m.id, m.role);
+          });
 
           // Extract deposit requests from messages
           if (onDepositRequest) {
@@ -203,6 +208,7 @@ export function Chat(props: Props) {
       {...props}
       initialMessages={initialMessages || undefined}
       knownMsgIds={knownMsgIdsRef}
+      msgRoles={msgRolesRef}
     />
   );
 }
@@ -212,6 +218,7 @@ export function Chat(props: Props) {
 interface InnerProps extends Props {
   initialMessages?: UIMessage[];
   knownMsgIds: React.RefObject<Set<string>>;
+  msgRoles: React.RefObject<Map<string, string>>;
 }
 
 function ChatInner({
@@ -241,6 +248,7 @@ function ChatInner({
   transferMethod,
   initialMessages,
   knownMsgIds,
+  msgRoles,
 }: InnerProps) {
   const [input, setInput] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -311,6 +319,9 @@ function ChatInner({
         },
         (payload) => {
           const newMsg = payload.new as Message;
+
+          // Track original DB role for rendering
+          msgRoles.current.set(newMsg.id, newMsg.role);
 
           // Skip messages we already know about
           if (knownMsgIds.current.has(newMsg.id)) return;
@@ -502,8 +513,16 @@ function ChatInner({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {allMessages.map((msg) => {
-          const isOwnMessage = msg.role === "user";
           const isAssistant = msg.role === "assistant";
+          // Determine the original DB role for this message
+          const dbRole = msgRoles.current.get(msg.id);
+          // "Own" = sent by the current user's role. Messages from useChat
+          // (not in msgRoles) with role "user" are always own messages.
+          // DB messages: own if dbRole matches userRole.
+          const isOwnMessage = msg.role === "user" && (!dbRole || dbRole === userRole);
+          // "Other party" = the other human in the deal (not AI)
+          const isOtherParty = msg.role === "user" && dbRole && dbRole !== userRole;
+          const otherPartyLabel = dbRole === "buyer" ? "Buyer" : dbRole === "seller" ? "Seller" : null;
 
           return (
             <div
@@ -514,13 +533,18 @@ function ChatInner({
                 className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
                   isAssistant
                     ? "bg-zinc-100 text-zinc-700"
-                    : isOwnMessage
-                      ? "bg-orange-500 text-white"
-                      : "bg-zinc-200 text-zinc-900"
+                    : isOtherParty
+                      ? "bg-zinc-200 text-zinc-900"
+                      : isOwnMessage
+                        ? "bg-orange-500 text-white"
+                        : "bg-zinc-200 text-zinc-900"
                 }`}
               >
                 {isAssistant && (
                   <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
+                )}
+                {isOtherParty && otherPartyLabel && (
+                  <div className="text-xs font-semibold mb-1 text-zinc-500">{otherPartyLabel}</div>
                 )}
                 {/* Render parts */}
                 {msg.parts.map((part, i) => {
