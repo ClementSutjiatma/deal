@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { usePrivy } from "@privy-io/react-auth";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import type { UIMessage } from "ai";
 import { createClient } from "@/lib/supabase/client";
 import { Send, Paperclip, X } from "lucide-react";
 import { DepositPrompt } from "@/components/deposit-prompt";
@@ -21,17 +24,46 @@ interface Props {
   depositLoading?: boolean;
   onDeposit?: () => void;
   onLogin?: () => void;
+  accessToken?: string | null;
+  authenticated?: boolean;
+  dealStatus?: string;
 }
 
-/** Strip deposit_request tags from displayed message content */
-function cleanDepositTag(text: string): string {
-  return text.replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "").trim();
-}
+/** Convert a Supabase Message to AI SDK UIMessage format */
+function dbMessageToUIMessage(msg: Message): UIMessage {
+  const meta = msg.metadata as Record<string, unknown> | null;
+  const depositCents = meta?.deposit_request_cents as number | undefined;
 
-/** Extract deposit_request amount from message content */
-function extractDepositRequest(text: string): number | null {
-  const match = text.match(/<deposit_request\s+amount_cents="(\d+)"\s*\/>/);
-  return match ? parseInt(match[1], 10) : null;
+  // Build parts array
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parts: any[] = [];
+
+  // Clean deposit tags from content for display
+  const cleanContent = msg.content
+    .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
+    .replace(/<command>.*?<\/command>/g, "")
+    .trim();
+
+  if (cleanContent) {
+    parts.push({ type: "text", text: cleanContent });
+  }
+
+  // If this AI message had a deposit request, add a tool part
+  if (msg.role === "ai" && depositCents) {
+    parts.push({
+      type: "tool-requestDeposit",
+      toolCallId: `legacy-${msg.id}`,
+      state: "output-available",
+      input: { amount_cents: depositCents },
+      output: { amount_cents: depositCents },
+    });
+  }
+
+  return {
+    id: msg.id,
+    role: msg.role === "ai" ? "assistant" : "user",
+    parts: parts.length > 0 ? parts : [{ type: "text", text: "" }],
+  } as UIMessage;
 }
 
 export function Chat({
@@ -47,56 +79,111 @@ export function Chat({
   depositLoading,
   onDeposit,
   onLogin,
+  accessToken,
+  authenticated,
+  dealStatus,
 }: Props) {
   const { getAccessToken } = usePrivy();
-  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+  const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(null);
+  const [realtimeMessages, setRealtimeMessages] = useState<Message[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supabase = createClient();
 
-  // Fetch initial messages
+  // Track known message IDs to avoid duplicates between useChat and realtime
+  const knownMsgIds = useRef(new Set<string>());
+
+  // Build transport only when we have what we need.
+  // IMPORTANT: Buyers must have a conversationId before sending messages,
+  // otherwise the server creates a new conversation and loses history.
+  const transport = useMemo(() => {
+    if (!accessToken && !anonymousId) return null;
+    // Buyers need a conversationId to avoid creating duplicate conversations
+    if (userRole === "buyer" && !conversationId) return null;
+
+    return new DefaultChatTransport({
+      api: `/api/deals/${dealId}/chat`,
+      headers: {
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        "x-conversation-id": conversationId || "",
+        "x-anonymous-id": anonymousId || "",
+      },
+    });
+  }, [dealId, accessToken, conversationId, anonymousId, userRole]);
+
+  // Fetch initial messages from Supabase
   useEffect(() => {
     async function fetchMessages() {
-      // Buyers must have a conversationId before fetching
       if (userRole === "buyer" && !conversationId) return;
 
       const params = new URLSearchParams();
       if (conversationId) params.set("conversation_id", conversationId);
 
       const headers: Record<string, string> = {};
-      const token = await getAccessToken();
+      const token = accessToken || await getAccessToken();
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
       }
 
       const res = await fetch(`/api/deals/${dealId}/messages?${params.toString()}`, { headers });
       if (res.ok) {
-        const data = await res.json();
-        setMessages(data);
+        const data: Message[] = await res.json();
+
+        // Convert to UIMessages
+        const uiMsgs = data.map(dbMessageToUIMessage);
+        setInitialMessages(uiMsgs);
+
+        // Track IDs
+        data.forEach((m) => knownMsgIds.current.add(m.id));
 
         // Check for deposit requests in existing messages
         if (onDepositRequest) {
           for (const msg of data) {
-            if (msg.metadata?.deposit_request_cents) {
-              onDepositRequest(msg.metadata.deposit_request_cents);
+            const meta = msg.metadata as Record<string, unknown> | null;
+            if (meta?.deposit_request_cents) {
+              onDepositRequest(meta.deposit_request_cents as number);
             }
           }
         }
+      } else {
+        setInitialMessages([]);
       }
     }
     fetchMessages();
-  }, [dealId, userId, conversationId, getAccessToken]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dealId, userId, conversationId, accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Subscribe to realtime
+  // useChat for streaming AI responses
+  const chatOptions = useMemo(() => ({
+    ...(transport ? { transport } : {}),
+    ...(initialMessages ? { messages: initialMessages } : {}),
+    onFinish: ({ message }: { message: UIMessage }) => {
+      // Check for deposit tool parts in the finished message
+      if (onDepositRequest) {
+        for (const part of message.parts) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const p = part as any;
+          if (
+            p.type === "tool-requestDeposit" &&
+            p.state === "output-available"
+          ) {
+            onDepositRequest(p.output.amount_cents);
+          }
+        }
+      }
+    },
+  }), [transport, initialMessages]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { messages: aiMessages, sendMessage, status } = useChat(chatOptions);
+
+  const isStreaming = status === "streaming" || status === "submitted";
+
+  // Subscribe to realtime for messages from OTHER users (seller/buyer messages, system messages)
   useEffect(() => {
-    // Buyers must have a conversationId before subscribing
     if (userRole === "buyer" && !conversationId) return;
 
-    // Use conversation_id filter when available, otherwise fall back to deal_id
     const filterColumn = conversationId ? "conversation_id" : "deal_id";
     const filterValue = conversationId || dealId;
 
@@ -112,17 +199,39 @@ export function Chat({
         },
         (payload) => {
           const newMsg = payload.new as Message;
-          // Check visibility
+
+          // Skip messages we already know about
+          if (knownMsgIds.current.has(newMsg.id)) return;
+
+          // Skip AI messages — these come through the useChat stream
+          if (newMsg.role === "ai") {
+            knownMsgIds.current.add(newMsg.id);
+            return;
+          }
+
+          // Skip messages sent by current user — useChat handles these optimistically
+          if (newMsg.role === "buyer" && userRole === "buyer") {
+            knownMsgIds.current.add(newMsg.id);
+            return;
+          }
+          if (newMsg.role === "seller" && userRole === "seller") {
+            knownMsgIds.current.add(newMsg.id);
+            return;
+          }
+
+          // Check visibility in dispute mode
           if (chatMode === "dispute" && userId) {
             if (newMsg.visibility === "seller_only" && userRole !== "seller") return;
             if (newMsg.visibility === "buyer_only" && userRole !== "buyer") return;
           }
-          setMessages((prev) => {
+
+          knownMsgIds.current.add(newMsg.id);
+          setRealtimeMessages((prev) => {
             if (prev.some((m) => m.id === newMsg.id)) return prev;
             return [...prev, newMsg];
           });
 
-          // Check for deposit request in new AI messages
+          // Check for deposit request
           if (newMsg.role === "ai" && onDepositRequest) {
             const meta = newMsg.metadata as Record<string, unknown> | null;
             if (meta?.deposit_request_cents) {
@@ -138,10 +247,42 @@ export function Chat({
     };
   }, [dealId, conversationId, userId, userRole, chatMode, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Merge useChat messages with realtime messages from other users
+  const allMessages = useMemo(() => {
+    const realtimeUIMsgs: UIMessage[] = realtimeMessages
+      .filter((m) => !aiMessages.some((ai) => ai.id === m.id))
+      .map(dbMessageToUIMessage);
+
+    const combined = [...aiMessages];
+    for (const rtMsg of realtimeUIMsgs) {
+      if (!combined.some((m) => m.id === rtMsg.id)) {
+        combined.push(rtMsg);
+      }
+    }
+
+    return combined;
+  }, [aiMessages, realtimeMessages]);
+
+  // Find the last deposit message for isLatest tracking
+  const lastDepositMsgId = useMemo(() => {
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      const msg = allMessages[i];
+      if (msg.role === "assistant") {
+        for (const part of msg.parts) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((part as any).type === "tool-requestDeposit") {
+            return msg.id;
+          }
+        }
+      }
+    }
+    return null;
+  }, [allMessages]);
+
   // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [allMessages]);
 
   // Clean up previews on unmount
   useEffect(() => {
@@ -154,7 +295,6 @@ export function Chat({
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
-    // Limit to 4 images at a time
     const maxNew = Math.max(0, 4 - pendingFiles.length);
     const newFiles = files.slice(0, maxNew);
 
@@ -164,7 +304,6 @@ export function Chat({
       ...newFiles.map((f) => URL.createObjectURL(f)),
     ].slice(0, 4));
 
-    // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -199,102 +338,119 @@ export function Chat({
   }
 
   // Can send if: has a role AND (seller OR has conversationId for buyers)
-  const canSend = !!userRole && (userRole === "seller" || !!conversationId);
+  const canSend = !!userRole && (userRole === "seller" || !!conversationId) && !!transport;
 
-  async function sendMessage(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if ((!input.trim() && pendingFiles.length === 0) || !canSend || sending) return;
+    if ((!input.trim() && pendingFiles.length === 0) || !canSend || isStreaming) return;
 
-    setSending(true);
-    try {
-      // Upload images first (only for authenticated users -- anonymous can't upload)
-      const mediaUrls = userId ? await uploadFiles() : [];
+    // Upload images first (only for authenticated users)
+    const mediaUrls = userId ? await uploadFiles() : [];
 
-      const token = await getAccessToken();
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
+    const text = input.trim() || (mediaUrls.length > 0 ? "[image]" : "");
+    setInput("");
+    setPendingFiles([]);
+    previews.forEach((url) => URL.revokeObjectURL(url));
+    setPreviews([]);
 
-      const res = await fetch(`/api/deals/${dealId}/messages`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          content: input.trim() || (mediaUrls.length > 0 ? "[image]" : ""),
-          conversation_id: conversationId || undefined,
-          anonymous_id: anonymousId || undefined,
-          media_urls: mediaUrls.length > 0 ? mediaUrls : undefined,
-        }),
-      });
-
-      if (res.ok) {
-        setInput("");
-        setPendingFiles([]);
-        previews.forEach((url) => URL.revokeObjectURL(url));
-        setPreviews([]);
-      }
-    } finally {
-      setSending(false);
+    if (text) {
+      await sendMessage({ text });
     }
+  }
+
+  // Show loading spinner until initial messages are loaded
+  if (initialMessages === null) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col h-full">
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.map((msg) => {
-          const meta = msg.metadata as Record<string, unknown> | null;
-          const depositCents = meta?.deposit_request_cents as number | undefined;
-          const displayContent = cleanDepositTag(msg.content);
+        {allMessages.map((msg) => {
+          const isOwnMessage = msg.role === "user";
+          const isAssistant = msg.role === "assistant";
 
           return (
             <div
               key={msg.id}
-              className={`flex ${msg.role === userRole ? "justify-end" : "justify-start"}`}
+              className={`flex ${isOwnMessage ? "justify-end" : "justify-start"}`}
             >
               <div
                 className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${
-                  msg.role === "ai" || msg.role === "system"
+                  isAssistant
                     ? "bg-zinc-100 text-zinc-700"
-                    : msg.role === userRole
+                    : isOwnMessage
                       ? "bg-orange-500 text-white"
                       : "bg-zinc-200 text-zinc-900"
                 }`}
               >
-                {msg.role !== userRole && msg.role !== "ai" && msg.role !== "system" && (
-                  <div className="text-xs font-semibold mb-1 opacity-70">
-                    {msg.role === "seller" ? "Seller" : "Buyer"}
-                  </div>
-                )}
-                {msg.role === "ai" && (
+                {isAssistant && (
                   <div className="text-xs font-semibold mb-1 text-orange-600">Dealbay</div>
                 )}
-                <MarkdownText>{displayContent}</MarkdownText>
-                {msg.media_urls && msg.media_urls.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    {msg.media_urls.map((url, i) => (
-                      <img
+                {/* Render parts */}
+                {msg.parts.map((part, i) => {
+                  if (part.type === "text" && part.text) {
+                    // Strip any <command> or <deposit_request> tags from rendered text
+                    const cleanText = part.text
+                      .replace(/<command>.*?<\/command>/g, "")
+                      .replace(/<deposit_request\s+amount_cents="\d+"\s*\/>/g, "")
+                      .trim();
+                    if (!cleanText) return null;
+                    return <MarkdownText key={i}>{cleanText}</MarkdownText>;
+                  }
+
+                  // Tool part: requestDeposit
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const p = part as any;
+                  if (
+                    p.type === "tool-requestDeposit" &&
+                    (p.state === "output-available" || p.state === "input-available") &&
+                    userRole === "buyer" &&
+                    (onDeposit || onLogin)
+                  ) {
+                    const amountCents = p.output?.amount_cents ?? p.input?.amount_cents;
+                    if (!amountCents) return null;
+
+                    return (
+                      <DepositPrompt
                         key={i}
-                        src={url}
-                        alt="attachment"
-                        className="rounded-lg max-w-full max-h-48 object-cover"
+                        amountCents={amountCents}
+                        onDeposit={onDeposit || (() => {})}
+                        disabled={disabled}
+                        loading={depositLoading}
+                        authenticated={authenticated}
+                        onLogin={onLogin}
+                        dealStatus={dealStatus}
+                        isLatest={msg.id === lastDepositMsgId}
                       />
-                    ))}
-                  </div>
-                )}
-                {/* Inline deposit prompt for AI messages with deposit request */}
-                {msg.role === "ai" && depositCents && userRole === "buyer" && onDeposit && (
-                  <DepositPrompt
-                    amountCents={depositCents}
-                    onDeposit={onDeposit}
-                    disabled={disabled}
-                    loading={depositLoading}
-                  />
-                )}
+                    );
+                  }
+
+                  return null;
+                })}
               </div>
             </div>
           );
         })}
+
+        {/* Streaming indicator */}
+        {isStreaming && allMessages[allMessages.length - 1]?.role === "user" && (
+          <div className="flex justify-start">
+            <div className="bg-zinc-100 rounded-2xl px-4 py-2 text-sm text-zinc-400">
+              <div className="flex gap-1">
+                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+            </div>
+          </div>
+        )}
+
         <div ref={bottomRef} />
       </div>
 
@@ -321,7 +477,7 @@ export function Chat({
 
       {/* Input */}
       {!disabled && canSend && (
-        <form onSubmit={sendMessage} className="border-t border-zinc-200 px-4 py-3 flex gap-2">
+        <form onSubmit={handleSubmit} className="border-t border-zinc-200 px-4 py-3 flex gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -330,7 +486,6 @@ export function Chat({
             className="hidden"
             onChange={handleFileSelect}
           />
-          {/* Only show attachment button for authenticated users */}
           {userId && (
             <button
               type="button"
@@ -340,7 +495,7 @@ export function Chat({
                   ? "bg-orange-100 text-orange-600"
                   : "bg-zinc-100 text-zinc-400 hover:text-zinc-600"
               }`}
-              disabled={sending}
+              disabled={isStreaming}
             >
               <Paperclip className="w-4 h-4" />
             </button>
@@ -351,11 +506,11 @@ export function Chat({
             onChange={(e) => setInput(e.target.value)}
             placeholder={placeholder || "Type a message..."}
             className="flex-1 h-10 px-4 rounded-full bg-zinc-100 text-sm outline-none focus:ring-2 focus:ring-orange-500/50"
-            disabled={sending}
+            disabled={isStreaming}
           />
           <button
             type="submit"
-            disabled={(!input.trim() && pendingFiles.length === 0) || sending}
+            disabled={(!input.trim() && pendingFiles.length === 0) || isStreaming}
             className="w-10 h-10 rounded-full bg-orange-500 text-white flex items-center justify-center hover:bg-orange-600 transition-colors disabled:opacity-50"
           >
             <Send className="w-4 h-4" />

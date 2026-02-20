@@ -61,6 +61,16 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
   const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === "84532";
   const supabase = createClient();
 
+  // Access token for Chat transport (refreshed on auth state changes)
+  const [chatAccessToken, setChatAccessToken] = useState<string | null>(null);
+  useEffect(() => {
+    if (authenticated) {
+      getAccessToken().then((t) => setChatAccessToken(t));
+    } else {
+      setChatAccessToken(null);
+    }
+  }, [authenticated, getAccessToken]);
+
   // Anonymous buyer ID (generated per-deal, stored in localStorage)
   const anonymousId = useAnonymousId(deal?.id);
 
@@ -597,6 +607,9 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
             onDeposit={handleDeposit}
             onLogin={!authenticated ? login : undefined}
             depositLoading={depositLoading}
+            accessToken={chatAccessToken}
+            authenticated={authenticated}
+            dealStatus={deal.status}
           />
         )}
       </div>
@@ -649,26 +662,7 @@ export default function DealPage({ params }: { params: Promise<{ shortCode: stri
                   </button>
                 )}
 
-                {/* Deposit button -- only show if no AI deposit prompt yet, as a fallback */}
-                {!negotiatedPriceCents && (
-                  <button
-                    onClick={handleDeposit}
-                    disabled={depositLoading || (authenticated && !hasEnough)}
-                    className="w-full h-14 rounded-2xl bg-orange-500 text-white font-semibold text-lg flex items-center justify-center gap-2 hover:bg-orange-600 transition-colors disabled:opacity-50"
-                  >
-                    {depositLoading ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        Processing deposit...
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="w-5 h-5" />
-                        Deposit {priceDisplay}
-                      </>
-                    )}
-                  </button>
-                )}
+                {/* Deposit button removed — now shown inline in chat via requestDeposit tool */}
               </>
             );
           })()}

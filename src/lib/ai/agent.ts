@@ -1,8 +1,9 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateText, streamText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
+import { dealChatTools } from "./tools";
 
-interface DealContext {
+export interface DealContext {
   deal: Deal;
   seller: User;
   buyer: User | null;
@@ -139,7 +140,7 @@ Rules for chat:
   * Answer factual questions about the deal (event, venue, date, seats, transfer method).
   * Ask the buyer: "How much are you willing to pay for these tickets?" or similar natural phrasing.
   * When a buyer states a price offer:
-    - If the offer (in cents) is >= the seller's minimum price (${deal.price_cents} cents / ${priceDisplay}): Accept the offer enthusiastically. Tell them it meets the seller's expectations and they can now proceed to deposit. Output the command: <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> where AMOUNT_CENTS is the buyer's offered amount in cents.
+    - If the offer (in cents) is >= the seller's minimum price (${deal.price_cents} cents / ${priceDisplay}): Accept the offer enthusiastically. Tell them it meets the seller's expectations and they can now proceed to deposit. You MUST do BOTH: (1) Call the requestDeposit tool with { amount_cents: THEIR_OFFER_IN_CENTS }. (2) Output the command: <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> where AMOUNT_CENTS is the buyer's offered amount in cents.
     - If the offer is below the seller's minimum: Say something like "That's below what the seller is looking for" without revealing the actual price. Encourage them to offer more. Be friendly, not pushy.
   * Do NOT say "the price is fixed" or reveal any specific number. Just say offers are below/above the seller's expectations.
 - When chat_mode is "open" and price IS already accepted:
@@ -164,14 +165,15 @@ When you need to trigger a state change, output one of these commands at the END
 Keep responses concise. No more than 2-3 short paragraphs. Be friendly but professional.`;
 }
 
-// ─── Deal chat (non-streaming, same interface) ───────────────────────
+// ─── Shared message building ──────────────────────────────────────────
 
-export async function getAIResponse(
-  context: DealContext
-): Promise<{ content: string; command: string | null; depositRequestCents: number | null }> {
-  const systemPrompt = buildDealChatPrompt(context);
-
+function buildMergedMessages(context: DealContext): ModelMessage[] {
   const messages = context.recentMessages
+    .filter((msg) => {
+      // Skip empty AI messages (from tool-only responses that were incorrectly stored)
+      if (msg.role === "ai" && (!msg.content || msg.content.trim() === "")) return false;
+      return true;
+    })
     .slice(-50)
     .map((msg) => {
       const roleLabel = msg.role === "ai" ? undefined : msg.role;
@@ -211,7 +213,6 @@ export async function getAIResponse(
   for (const msg of messages) {
     const last = mergedMessages[mergedMessages.length - 1];
     if (last && last.role === msg.role) {
-      // Merge text content (keep it simple for merged messages)
       const lastText =
         typeof last.content === "string"
           ? last.content
@@ -227,7 +228,6 @@ export async function getAIResponse(
               .map((p) => p.text)
               .join("\n");
 
-      // Collect all image parts
       const lastImages =
         typeof last.content === "string"
           ? []
@@ -265,15 +265,54 @@ export async function getAIResponse(
     });
   }
 
+  return mergedMessages;
+}
+
+// ─── Deal chat (streaming, with tools) ────────────────────────────────
+
+export function streamDealChat(
+  context: DealContext,
+  onFinish?: (event: { text: string }) => void | Promise<void>,
+) {
+  const systemPrompt = buildDealChatPrompt(context);
+  const mergedMessages = buildMergedMessages(context);
+
+  return streamText({
+    model: anthropic("claude-sonnet-4-5-20250929"),
+    system: systemPrompt,
+    messages: mergedMessages,
+    tools: {
+      ...dealChatTools,
+      web_search: webSearchTool,
+    },
+    maxOutputTokens: 1024,
+    stopWhen: stepCountIs(3),
+    onFinish: onFinish
+      ? async (event) => {
+          await onFinish({ text: event.text });
+        }
+      : undefined,
+  });
+}
+
+// ─── Deal chat (non-streaming, legacy) ────────────────────────────────
+
+export async function getAIResponse(
+  context: DealContext
+): Promise<{ content: string; command: string | null; depositRequestCents: number | null }> {
+  const systemPrompt = buildDealChatPrompt(context);
+  const mergedMessages = buildMergedMessages(context);
+
   const result = await generateText({
     model: anthropic("claude-sonnet-4-5-20250929"),
     system: systemPrompt,
     messages: mergedMessages,
     tools: {
+      ...dealChatTools,
       web_search: webSearchTool,
     },
-    stopWhen: stepCountIs(3),
     maxOutputTokens: 1024,
+    stopWhen: stepCountIs(3),
   });
 
   const text = result.text;
@@ -282,9 +321,30 @@ export async function getAIResponse(
   const commandMatch = text.match(/<command>(.*?)<\/command>/);
   const command = commandMatch ? commandMatch[1] : null;
 
-  // Extract deposit request if present
+  // Extract deposit request from tool calls or XML tag
+  let depositRequestCents: number | null = null;
   const depositMatch = text.match(/<deposit_request\s+amount_cents="(\d+)"\s*\/>/);
-  const depositRequestCents = depositMatch ? parseInt(depositMatch[1], 10) : null;
+  if (depositMatch) {
+    depositRequestCents = parseInt(depositMatch[1], 10);
+  }
+
+  // Also check tool calls for requestDeposit
+  for (const step of result.steps) {
+    for (const toolCall of step.staticToolCalls) {
+      if (toolCall.toolName === "requestDeposit") {
+        const input = toolCall.input as { amount_cents?: number };
+        if (input.amount_cents) {
+          depositRequestCents = input.amount_cents;
+        }
+      }
+    }
+  }
+
+  // Backend fallback: derive depositRequestCents from PRICE_ACCEPTED command
+  if (!depositRequestCents && command?.startsWith("PRICE_ACCEPTED:")) {
+    const cents = parseInt(command.split(":")[1], 10);
+    if (!isNaN(cents)) depositRequestCents = cents;
+  }
 
   const content = text
     .replace(/<command>.*?<\/command>/g, "")
