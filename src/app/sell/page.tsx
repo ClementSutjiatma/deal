@@ -87,9 +87,14 @@ function SellChat({ accessToken }: { accessToken: string }) {
       },
     ],
     onFinish: async ({ message }) => {
-      // When the AI response finishes, check if it contains deal data
+      // Check if the AI response contains a createDeal tool call or legacy <deal_data>
       const text = getMessageText(message.parts as Array<{ type: string; text?: string }>);
-      if (text.includes("<deal_data>") && user?.id) {
+      const hasCreateDealTool = message.parts.some(
+        (p: { type: string }) => p.type === "tool-createDeal"
+      );
+      const hasDealData = text.includes("<deal_data>");
+
+      if ((hasCreateDealTool || hasDealData) && user?.id) {
         // Give the server a moment to create the deal in its onFinish callback
         await new Promise((r) => setTimeout(r, 1500));
 

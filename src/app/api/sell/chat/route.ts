@@ -41,16 +41,36 @@ export async function POST(request: NextRequest) {
             .join(""),
   }));
 
-  const result = streamDealCreation(simpleMessages, async ({ text }) => {
-    // onFinish: create the deal if <deal_data> is present in the final text
-    const dealDataMatch = text.match(/<deal_data>([\s\S]*?)<\/deal_data>/);
-    if (!dealDataMatch) return;
+  const result = streamDealCreation(simpleMessages, async ({ text, toolCalls }) => {
+    // Check for createDeal tool call (structured output via tool)
+    const createDealCall = toolCalls?.find((tc) => tc.toolName === "createDeal");
 
-    let dealData: Record<string, unknown>;
-    try {
-      dealData = JSON.parse(dealDataMatch[1]);
-    } catch {
-      return;
+    // Also support legacy <deal_data> XML for backward compatibility
+    let dealData: Record<string, unknown> | null = null;
+
+    if (createDealCall) {
+      // The tool's execute function already applied the cents safety net
+      // Use the output (which has corrected price_cents) if available, otherwise input
+      dealData = (createDealCall.output as Record<string, unknown>) || (createDealCall.input as Record<string, unknown>);
+    } else {
+      // Fallback: parse <deal_data> XML from text
+      const dealDataMatch = text.match(/<deal_data>([\s\S]*?)<\/deal_data>/);
+      if (dealDataMatch) {
+        try {
+          dealData = JSON.parse(dealDataMatch[1]);
+        } catch {
+          // Invalid JSON, skip
+        }
+      }
+    }
+
+    if (!dealData) return;
+
+    // Server-side safety net for price_cents
+    let priceCents = dealData.price_cents as number;
+    if (priceCents > 0 && priceCents < 100) {
+      // Looks like dollars were passed instead of cents — convert
+      priceCents = Math.round(priceCents * 100);
     }
 
     const supabase = createServiceClient();
@@ -74,7 +94,7 @@ export async function POST(request: NextRequest) {
       row: (dealData.row as string) || null,
       seats: (dealData.seats as string) || null,
       num_tickets: dealData.num_tickets as number,
-      price_cents: dealData.price_cents as number,
+      price_cents: priceCents,
       transfer_method: (dealData.transfer_method as string) || null,
       terms,
     });

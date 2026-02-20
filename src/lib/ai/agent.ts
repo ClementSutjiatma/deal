@@ -1,7 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import type { Deal, Message, User, Conversation } from "@/lib/types/database";
-import { dealChatTools } from "./tools";
+import { dealChatTools, dealCreationTools } from "./tools";
 
 export interface DealContext {
   deal: Deal;
@@ -53,8 +53,15 @@ Rules:
 2. Confirm what you extracted and ask for what's missing
 3. Be specific about prices — always clarify if it's per ticket or total
 4. Nudge for row and seat numbers — this is the #1 cause of disputes
-5. Once ALL required fields are populated, generate a JSON block with the structured data
+5. Once ALL required fields are populated, call the createDeal tool
 6. NEVER generate a deal link until all fields are confirmed
+
+PRICE HANDLING (CRITICAL):
+- Sellers state prices in DOLLARS (e.g. "$1", "$50", "$400")
+- The createDeal tool expects price_cents — you MUST convert dollars to cents by multiplying by 100
+- Examples: $1 → 100, $2 → 200, $25 → 2500, $50 → 5000, $150 → 15000, $400 → 40000
+- ALWAYS confirm the total price with the seller before calling createDeal
+- The price_cents field is the TOTAL price for ALL tickets, not per ticket (unless clarified)
 
 EVENT VERIFICATION (IMPORTANT):
 - You have access to web search. When a seller mentions an event, artist, or venue, use web search to verify:
@@ -66,25 +73,9 @@ EVENT VERIFICATION (IMPORTANT):
 - ALWAYS verify before creating the deal. This protects both sellers and buyers from listing errors.
 - If you can't verify (e.g. private event, small venue), that's fine — just proceed with what the seller provides.
 
-When all fields are confirmed, output EXACTLY this format at the end of your message:
+When all fields are confirmed, call the createDeal tool with the structured data. The tool enforces a schema so the data is always valid.
 
-<deal_data>
-{
-  "event_name": "...",
-  "event_date": "YYYY-MM-DDTHH:mm:ss",
-  "venue": "...",
-  "num_tickets": 2,
-  "section": "...",
-  "row": "...",
-  "seats": "...",
-  "price_cents": 40000,
-  "transfer_method": "ticketmaster"
-}
-</deal_data>
-
-Only include the <deal_data> block when ALL fields are confirmed. The system will detect this and create the deal automatically.
-
-After outputting <deal_data>, continue in the SAME message with a short, friendly confirmation. Tell the seller:
+After calling createDeal, continue in the SAME message with a short, friendly confirmation. Tell the seller:
 - Their listing has been saved and is live
 - They'll be notified as soon as a buyer shows interest or deposits
 - Share the link (it'll pop up as a notification on screen) — first person to deposit locks in the deal
@@ -102,7 +93,7 @@ function buildDealChatPrompt(ctx: DealContext): string {
   const buyerOfferAccepted = !!(deal.terms as Record<string, unknown> | null)?.buyer_offer_accepted;
 
   return `You are Dealbay, an escrow agent for a peer-to-peer ticket sale. You communicate via an in-app chat on the deal page. Your job:
-1. Negotiate with buyers to find a price that meets the seller's minimum (pre-deposit)
+1. Accept or reject buyer price offers based STRICTLY on the seller's minimum price below
 2. Manage the transaction flow (guide, nudge, enforce timeouts)
 3. If a dispute arises, collect evidence from both parties and adjudicate
 
@@ -111,7 +102,7 @@ Today's date: ${today}
 Current deal:
 - Event: ${deal.event_name}${deal.venue ? ` at ${deal.venue}` : ""}${deal.event_date ? `, ${new Date(deal.event_date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}` : ""}
 - Tickets: ${deal.num_tickets}x ${[deal.section, deal.row ? `Row ${deal.row}` : null, deal.seats ? `Seats ${deal.seats}` : null].filter(Boolean).join(", ")}
-- Seller's minimum price (HIDDEN from buyers): ${priceDisplay} total
+- Seller's minimum price (HIDDEN from buyers): ${priceDisplay} total (${deal.price_cents} cents)
 - Transfer method: ${deal.transfer_method || "TBD"}
 - Status: ${deal.status}
 - Seller: ${seller.name || "Seller"}
@@ -131,6 +122,14 @@ EVENT VERIFICATION:
 - If you find that the event has been canceled, rescheduled, or the details differ from what's listed, proactively inform the buyer.
 - During disputes, you can search for event cancellation notices, venue policies, or other relevant information.
 
+PRICE NEGOTIATION — STRICT RULES (YOU MUST FOLLOW THESE EXACTLY):
+- The seller set their minimum price to ${priceDisplay} (${deal.price_cents} cents). This is the ONLY price that matters.
+- You MUST accept ANY offer that is >= ${deal.price_cents} cents. No exceptions.
+- You MUST reject ANY offer that is < ${deal.price_cents} cents. No exceptions.
+- Do NOT use your own judgment about whether a price seems "too low" or "unreasonable" for the event. The seller chose this price — respect it.
+- Even if the price seems very low for the event type, the seller may have their own reasons. Your job is to enforce THEIR price, not market prices.
+- NEVER override the seller's minimum with your own opinion about what tickets "should" cost.
+
 Rules for chat:
 - You are chatting with a prospective buyer in their PRIVATE thread. The seller is NOT in this chat — you represent the seller.
 - This is a 1-on-1 conversation between you and this buyer. Other buyers have their own separate threads.
@@ -140,8 +139,9 @@ Rules for chat:
   * Answer factual questions about the deal (event, venue, date, seats, transfer method).
   * Ask the buyer: "How much are you willing to pay for these tickets?" or similar natural phrasing.
   * When a buyer states a price offer:
-    - If the offer (in cents) is >= the seller's minimum price (${deal.price_cents} cents / ${priceDisplay}): Accept the offer enthusiastically. Tell them it meets the seller's expectations and they can now proceed to deposit. You MUST do BOTH: (1) Call the requestDeposit tool with { amount_cents: THEIR_OFFER_IN_CENTS }. (2) Output the command: <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> where AMOUNT_CENTS is the buyer's offered amount in cents.
-    - If the offer is below the seller's minimum: Say something like "That's below what the seller is looking for" without revealing the actual price. Encourage them to offer more. Be friendly, not pushy.
+    - Convert their offer to cents (e.g. "$2" = 200 cents, "$50" = 5000 cents)
+    - If the offer in cents >= ${deal.price_cents} cents: ACCEPT immediately. Do not question why they're offering this amount. Tell them it meets the seller's expectations and they can now proceed to deposit. You MUST do BOTH: (1) Call the requestDeposit tool with { amount_cents: THEIR_OFFER_IN_CENTS }. (2) Output the command: <command>PRICE_ACCEPTED:AMOUNT_CENTS</command> where AMOUNT_CENTS is the buyer's offered amount in cents.
+    - If the offer in cents < ${deal.price_cents} cents: Say something like "That's below what the seller is looking for" without revealing the actual price. Encourage them to offer more. Be friendly, not pushy.
   * Do NOT say "the price is fixed" or reveal any specific number. Just say offers are below/above the seller's expectations.
 - When chat_mode is "open" and price IS already accepted:
   * The buyer has been approved to deposit. Answer any remaining questions. The deposit button is now available to them.
@@ -319,9 +319,14 @@ export function streamDealChat(
 
 // ─── Sell chat (streaming, returns streamText result) ────────────────
 
+interface DealCreationFinishEvent {
+  text: string;
+  toolCalls?: Array<{ toolName: string; input: unknown; output: unknown }>;
+}
+
 export function streamDealCreation(
   messages: Array<{ role: "user" | "assistant"; content: string }>,
-  onFinish?: (event: { text: string }) => void | Promise<void>
+  onFinish?: (event: DealCreationFinishEvent) => void | Promise<void>
 ) {
   const systemPrompt = buildDealCreationPrompt();
 
@@ -340,13 +345,28 @@ export function streamDealCreation(
     system: systemPrompt,
     messages: apiMessages,
     tools: {
+      ...dealCreationTools,
       web_search: webSearchTool,
     },
-    stopWhen: stepCountIs(3),
+    stopWhen: stepCountIs(5),
     maxOutputTokens: 1024,
     onFinish: onFinish
       ? async (event) => {
-          await onFinish({ text: event.text });
+          // Collect createDeal tool calls from all steps
+          const allToolCalls: Array<{ toolName: string; input: unknown; output: unknown }> = [];
+          for (const step of event.steps) {
+            for (const tc of step.staticToolCalls) {
+              allToolCalls.push({
+                toolName: tc.toolName,
+                input: tc.input,
+                output: (tc as unknown as { output: unknown }).output,
+              });
+            }
+          }
+          await onFinish({
+            text: event.text,
+            toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+          });
         }
       : undefined,
   });
