@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 import { useAppUser } from "./providers";
 
 export function NamePrompt() {
   const { user, setUser } = useAppUser();
+  const { getAccessToken } = usePrivy();
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -17,9 +19,15 @@ export function NamePrompt() {
 
     setSaving(true);
     try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) return;
+
       const res = await fetch("/api/auth", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
         body: JSON.stringify({
           privy_user_id: user!.privy_user_id,
           phone: user!.phone,
